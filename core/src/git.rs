@@ -19,6 +19,11 @@ pub fn output(args: &[&str]) -> std::io::Result<Output> {
     Command::new("git").args(args).output()
 }
 
+/// Like `output`, but run in `dir` (e.g. the repository root, for root-relative paths).
+pub fn output_in(dir: &str, args: &[&str]) -> std::io::Result<Output> {
+    Command::new("git").current_dir(dir).args(args).output()
+}
+
 /// Run `git <args>` and return stdout, or None on any failure.
 fn git(args: &[&str]) -> Option<String> {
     let output = output(args).ok()?;

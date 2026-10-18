@@ -6,6 +6,8 @@ use unicode_width::UnicodeWidthStr;
 
 use repo_tweaks_core::git::{GitConfig, KEY_STALE_DAYS};
 use repo_tweaks_core::lfs;
+
+use crate::text::pad;
 use repo_tweaks_core::locks::{
     DEFAULT_STALE_DAYS, Lock, LockList, MAX_STALE_DAYS, format_age, format_jst, format_rfc3339,
 };
@@ -33,10 +35,6 @@ fn resolve_stale_days(flag: Option<u32>, configured: Option<String>) -> Result<u
     value
         .filter(|d| (1..=MAX_STALE_DAYS).contains(d))
         .ok_or_else(|| format!("{source} は 1〜{MAX_STALE_DAYS} の整数にしてください"))
-}
-
-fn pad(text: &str, width: usize) -> String {
-    format!("{text}{}", " ".repeat(width.saturating_sub(text.width())))
 }
 
 fn render(locks: &LockList, now: OffsetDateTime, stale_days: u32) -> String {

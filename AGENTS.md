@@ -6,8 +6,8 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 ## 進め方
 
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
-- 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）。
-- 次は Step 2 で `lock` / `unlock`（`--force` は確認を挟む）の予定。その後 `status`（lockable と突き合わせ）。
+- 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）。
+- 次の候補は `status`（`.gitattributes` の lockable と突き合わせ）と、ロック・解除のサーバーへの通知（Slack 通知の Step で内容と一緒に決める）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
 ## 言語・書き方
@@ -20,8 +20,8 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 ```text
 repo-tweaks/
 ├─ Cargo.toml        Rust workspace（members: core, cli）
-├─ core/             Rust のライブラリ。git.rs（git の呼び出し・設定）、locks.rs（ロックの解釈・古さ・日本時間の表示）、lfs.rs（git lfs locks の実行とエラーの見分け）
-├─ cli/              Rust の CLI。コマンド名 repo-tweaks（list / ping / notify / events）
+├─ core/             Rust のライブラリ。git.rs（git の呼び出し・設定）、locks.rs（ロックの解釈・古さ・日本時間の表示）、lfs.rs（git lfs locks の実行とエラーの見分け）、paths.rs（パスをリポジトリのルートからの相対に直す）、ops.rs（ロック・解除の計画と実行）
+├─ cli/              Rust の CLI。コマンド名 repo-tweaks（list / lock / unlock / ping / notify / events）
 ├─ server/           Python 3.12 + Starlette + uvicorn。Docker で動かす
 ├─ hooks/            git hook のサンプル（post-commit）
 └─ unity/            Unity Editor 拡張（未着手）
@@ -34,6 +34,11 @@ repo-tweaks/
 - リポジトリの識別子は `remote.origin.url` を正規化した `host/owner/repo`（認証情報・ポートは除く）。フォルダ名に頼らない。
 - ロジックは core に置き、CLI は表示と引数だけにする（GUI・Unity からも使うため）。
 - `git lfs locks --verify --json` は、リポジトリ外・remote なし・認証失敗でも終了コード 0 で空の一覧を返す。必ず事前の確認と stderr（`fatal:` / `error`）の確認をして、空の一覧を「ロックなし」と誤表示しない。JSON の `[]`（`--verify` なしの形）も受け付けない。
+- lock / unlock は「計画（パスの解決・.meta の追加・一覧から自分 / 他人 / 未ロックを判定）→ 実行」の2段階。強制解除の確認は計画と実行の間で、呼ぶ側（CLI の y/N、Unity・GUI の画面）が行う。core は確認しない。
+- `.meta` の扱い：lock はディスクにある相方を追加、unlock は自分の（`--force` なら誰のでも）ロックの相方だけを追加。相方は元のファイルが成功したときだけ処理する（持ち主が分かれないように）。`--no-meta` で無効。
+- git lfs は1回の呼び出しに複数パスを渡す（指定したファイル → 相方の2回）。並列に実行しない（`.git/lfs/lockcache.db` を共有するため）。
+- パスは `git ls-files` の `:(icase,literal)` で git の表記に合わせ、ロックとは大文字・小文字を無視して突き合わせる（大小違いで二重ロックしない）。
+- 解除はパスで行う（Git LFS の「未コミットの変更があれば拒否」を生かす）。git lfs の出力形式は git-lfs 3.7 の `commands/command_lock.go` / `command_unlock.go` に合わせている。
 - 時刻は表示が日本時間（固定 +09:00）、`--json` は UTC。古さの既定は 3 日、git config `repo-tweaks.staleDays` か `--stale-days` で変更（1〜365）。
 - `notify` は hook の中で動くので、git の起動回数を増やさない（`git config --get-regexp` と `git rev-parse` を1回ずつ）。
 

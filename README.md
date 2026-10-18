@@ -1,7 +1,7 @@
 # repo-tweaks
 
 Git LFS のロックを土台にした、ファイルロック管理ツール（作成中）。
-いまは **Step 1: ロック一覧の表示（`repo-tweaks list`）** まで出来ています。
+いまは **Step 2: ロックの取得・解除（`repo-tweaks lock` / `unlock`）** まで出来ています。
 
 Step 0 で作った、CLI とサーバーの疎通の流れ：
 
@@ -15,7 +15,7 @@ git commit
 
 | フォルダ | 中身 |
 |---|---|
-| `core/` | Rust のライブラリ。git / git lfs の呼び出し、ロックの解釈と古さの判定（CLI・GUI・Unity で共通に使う） |
+| `core/` | Rust のライブラリ。git / git lfs の呼び出し、ロックの解釈と古さの判定、ロック・解除（CLI・GUI・Unity で共通に使う） |
 | `cli/` | Rust の CLI（コマンド名 `repo-tweaks`） |
 | `server/` | Python（Starlette）のサーバー。Docker で動かす |
 | `hooks/` | git hook のサンプル |
@@ -67,6 +67,8 @@ repo-tweaks events            # サーバーが受け取った通知を確認
 | コマンド | 内容 |
 |---|---|
 | `repo-tweaks list [--json] [--stale-days N]` | ロックの一覧を、自分のロック / 他人のロックに分けて表示する。古いロックに印を付ける |
+| `repo-tweaks lock <パス>... [--no-meta] [--json]` | ファイルをロックする。Unity の `.meta` があれば一緒にロックする |
+| `repo-tweaks unlock <パス>... [--force [--yes]] [--no-meta] [--json]` | ロックを解除する。ロック中の `.meta` も一緒に解除する |
 | `repo-tweaks ping` | サーバーにつながるか、トークンが正しいかを確かめる |
 | `repo-tweaks notify --event <種類>` | 今のリポジトリ（名前と origin の URL）・ブランチ・コミット・ユーザー名を送る |
 | `repo-tweaks events [--limit N]` | サーバーが受け取った通知を新しい順に表示する |
@@ -101,6 +103,37 @@ Git のリポジトリの中で実行します。`git lfs locks --verify --json`
   ```
 
 - `git lfs locks` は、リポジトリの外、remote が無いとき、ログインに失敗したときでも、エラーにならずに空の一覧を返します。`list` はこれらを先に確かめるか、git lfs のエラー出力から見分けて、理由を表示します（「ロックはありません」と誤って表示しないため）。
+
+## ロックの取得・解除（lock / unlock）
+
+```text
+$ repo-tweaks lock Assets/Scenes/Main.unity README.md Assets/Art/hero.psd
+ロックしました  Assets/Scenes/Main.unity
+ロックしました  Assets/Scenes/Main.unity.meta（自動で追加）
+ロック済み      README.md                             自分がロック中
+できません      Assets/Art/hero.psd                   bob さんが 10/14 10:00 からロック中
+repo-tweaks: 1 件は処理できませんでした
+```
+
+- パスは、今いるフォルダからの相対パスか、絶対パスで指定します。Windows の `\`、Git Bash の `/c/...` も使えます。
+- 大文字・小文字の違いは、git が管理している表記に合わせます（Mac / Windows で `assets/main.unity` と打っても `Assets/Main.unity` のロックになります）。別の表記で二重にロックしないためです。
+- フォルダは指定できません。ファイルを指定してください。
+- 先にロックの一覧を取り、自分 / 他人 / 未ロックを確かめてから、まとめて `git lfs lock` / `git lfs unlock` を実行します。
+- 1件でも「できません」があれば、終了コードは 1 になります。「ロック済み」「ロックなし」は失敗に数えません。
+- **`.meta`**：`Main.unity` をロックすると、`Main.unity.meta` があれば一緒にロックします（`.meta` を指定したときは、元のアセットも）。解除のときは、自分がロックしている相方だけを一緒に解除します（`--force` のときは他人のものも）。
+  - 元のファイルをロック・解除できなかったときは、相方は「しませんでした」として触りません（アセットと `.meta` の持ち主が分かれないようにするため）。
+  - `--no-meta` で止められます。
+- **未コミットの変更**：自分のロックでも、未コミットの変更があるファイルは Git LFS が解除を拒みます。コミットしてから解除するか、`--force` を付けてください。削除・移動して手元に無いファイルの解除も `--force` が必要です。
+- **他人のロックの強制解除**：`--force` を付けると、次のように確認してから解除します。持ち主には通知されません。
+
+  ```text
+  次の他人のロックを強制解除します（持ち主には通知されません）:
+    Assets/Art/hero.psd  bob  10/14 10:00 から
+  よろしいですか？ [y/N]:
+  ```
+
+  Unity や GUI から呼ぶときは、呼ぶ側の画面で確認したうえで `--yes` を付けます。入力できない状態で `--yes` が無いときは、何もしません。強制解除できるかどうかは、GitHub / GitLab での権限によります。
+- `--json` は、ファイルごとの結果（`result`：`locked` / `already_ours` / `held_by_other` / `no_such_file` / `is_directory` / `unlocked` / `force_unlocked` / `not_locked` / `others_lock` / `skipped_pair` / `failed`、`ok`、他人のロックなら `owner` と `locked_at`）を出力します。
 
 ## サーバーの API
 

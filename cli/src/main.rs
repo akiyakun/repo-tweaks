@@ -3,6 +3,8 @@
 mod client;
 mod config;
 mod list;
+mod lock;
+mod text;
 
 use std::process::ExitCode;
 
@@ -28,6 +30,36 @@ enum Command {
         /// 何日以上で「古い」とするか（既定は git config repo-tweaks.staleDays、無ければ 3）
         #[arg(long)]
         stale_days: Option<u32>,
+    },
+    /// ファイルをロックする（Unity の .meta があれば一緒にロック）
+    Lock {
+        /// ロックするファイル（複数可）
+        #[arg(required = true)]
+        paths: Vec<String>,
+        /// .meta を自動で追加しない
+        #[arg(long)]
+        no_meta: bool,
+        /// 結果を JSON で出力する
+        #[arg(long)]
+        json: bool,
+    },
+    /// ロックを解除する（ロック中の .meta も一緒に解除）
+    Unlock {
+        /// 解除するファイル（複数可）
+        #[arg(required = true)]
+        paths: Vec<String>,
+        /// 他人のロックも強制解除する。自分のロックは未コミットの変更があっても解除する
+        #[arg(long)]
+        force: bool,
+        /// --force の確認を飛ばす（ほかのツールから呼ぶとき。確認は呼ぶ側で行う）
+        #[arg(long, requires = "force")]
+        yes: bool,
+        /// .meta を自動で追加しない
+        #[arg(long)]
+        no_meta: bool,
+        /// 結果を JSON で出力する
+        #[arg(long)]
+        json: bool,
     },
     /// サーバーにつながるか（トークンが正しいか）を確かめる
     Ping,
@@ -62,6 +94,10 @@ fn run(command: Command) -> Result<(), String> {
     let client = || config::Config::load(&git_config).map(Client::new);
     match command {
         Command::List { json, stale_days } => list::run(&git_config, json, stale_days)?,
+        Command::Lock { paths, no_meta, json } => lock::lock(&git_config, &paths, !no_meta, json)?,
+        Command::Unlock { paths, force, yes, no_meta, json } => {
+            lock::unlock(&git_config, &paths, !no_meta, force, yes, json)?
+        }
         Command::Ping => {
             let client = client()?;
             let version = client.ping()?;
