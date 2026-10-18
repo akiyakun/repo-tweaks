@@ -28,6 +28,67 @@
 </section>
 
 <section class="card">
+  <h2>ロックの照合（GitHub）</h2>
+  <p class="muted">登録したリポジトリのロック一覧を {{ reconcile.interval_minutes }} 分ごとに GitHub から取り、CLI を通らずに取られた・外れたロック（Fork や <code>git lfs lock</code> など）を Discord に通知します。登録した直後の 1 回目は、今あるロックを数えるだけで通知しません。</p>
+  {% if repos %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>リポジトリ</th><th>ユーザー名</th><th>トークン</th><th>前回の照合</th><th>ロック</th><th>状態</th><th></th></tr></thead>
+      <tbody>
+      {% for r in repos %}
+        <tr>
+          <td class="wrap">{{ r.remote }}</td><td>{{ r.username }}</td><td><code>{{ r.token }}</code></td>
+          <td>{{ r.state.last_checked | jst if r.state.last_checked else "まだ" }}</td>
+          <td>{{ r.state.locks | length if r.state.initialized else "—" }}</td>
+          <td class="wrap">{% if r.state.last_error %}<span class="error-text">{{ r.state.last_error }}</span>{% elif r.state.initialized %}OK{% else %}—{% endif %}</td>
+          <td><form method="post" action="/repos/delete"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger compact">削除</button></form></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="actions">
+    <form method="post" action="/reconcile/run"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">今すぐ照合</button></form>
+  </div>
+  <p class="muted">次の照合: {{ next_run | jst if next_run else "まもなく" }}</p>
+  {% else %}
+  <p class="muted">まだ登録されていません。</p>
+  {% endif %}
+
+  <h3>リポジトリを登録する</h3>
+  <form method="post" action="/repos/add">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="repo_url">リポジトリの URL</label>
+    <input id="repo_url" name="url" type="text" placeholder="https://github.com/example-org/game" autocomplete="off" required>
+    <label for="repo_user">GitHub のユーザー名</label>
+    <input id="repo_user" name="username" type="text" autocomplete="off" required>
+    <label for="repo_token">トークン（このリポジトリを読めるもの）</label>
+    <input id="repo_token" name="token" type="password" autocomplete="new-password" required>
+    <p class="muted small">トークンはサーバーの設定ファイル（Docker のボリュームの中）に保存し、画面には最後の 4 文字だけを出します。</p>
+    <button type="submit">登録</button>
+  </form>
+
+  <h3>照合の間隔</h3>
+  <form method="post" action="/reconcile" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input name="interval_minutes" type="number" min="{{ min_interval }}" max="{{ max_interval }}" value="{{ reconcile.interval_minutes }}" class="short" required> 分ごと（{{ min_interval }}〜{{ max_interval }}）
+    <button type="submit">保存</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>滞留の警告</h2>
+  <p class="muted">毎日決まった時刻（日本時間）に、長くロックされたままのものをまとめて Discord に通知します。照合で取ったロック一覧を使います（登録したリポジトリだけが対象です）。</p>
+  <form method="post" action="/stale">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label class="choice"><input type="checkbox" name="enabled" value="1" {% if stale.enabled %}checked{% endif %}> 警告を送る</label>
+    <label class="choice"><input name="days" type="number" min="{{ min_stale_days }}" max="{{ max_stale_days }}" value="{{ stale.days }}" class="short" required> 日以上ロックされたままのもの</label>
+    <label class="choice">毎日 <input name="time" type="time" value="{{ stale.time }}" required> に送る</label>
+    <button type="submit">保存</button>
+  </form>
+</section>
+
+<section class="card">
   <h2>直近の受信（CLI・git hook から）</h2>
   <p class="muted">サーバーのメモリにだけ置いています（再起動で消えます）。新しい順に 20 件まで。</p>
   {% if events %}

@@ -33,6 +33,9 @@ pub struct Event {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct EventFile {
     pub path: String,
+    /// Lock ID, so the server's periodic check does not announce the same lock again
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     /// Whose lock it was (force_unlock)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
@@ -186,15 +189,20 @@ mod tests {
         // server/repo_tweaks_server/app.py parse_files reads exactly these keys
         let info = RepoInfo { remote: Some("github.com/example-org/game".into()), user: Some("alice".into()), ..Default::default() };
         let files = vec![
-            EventFile { path: "a.psd".into(), owner: None, locked_at: None },
-            EventFile { path: "b.psd".into(), owner: Some("bob".into()), locked_at: Some("2026-10-14T01:00:00Z".into()) },
+            EventFile { path: "a.psd".into(), id: Some("7".into()), owner: None, locked_at: None },
+            EventFile {
+                path: "b.psd".into(),
+                id: None,
+                owner: Some("bob".into()),
+                locked_at: Some("2026-10-14T01:00:00Z".into()),
+            },
         ];
         let json = serde_json::to_value(Event::new("force_unlock".into(), info).with_files(files)).unwrap();
         assert_eq!(
             json,
             serde_json::json!({
                 "event": "force_unlock", "remote": "github.com/example-org/game", "user": "alice",
-                "files": [{"path": "a.psd"}, {"path": "b.psd", "owner": "bob", "locked_at": "2026-10-14T01:00:00Z"}]
+                "files": [{"path": "a.psd", "id": "7"}, {"path": "b.psd", "owner": "bob", "locked_at": "2026-10-14T01:00:00Z"}]
             })
         );
     }

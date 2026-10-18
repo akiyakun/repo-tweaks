@@ -76,10 +76,7 @@ def lock_message(event):
         whose = f" {_plain(owners[0])} さんの" if len(owners) == 1 else "他人の"
         header = f"⚠️ {who} が{whose}ロックを強制解除しました（{repo}）"
 
-    lines = [header]
-    length = len(header)
-    shown = 0
-    for f, has_meta in rows[:MAX_LISTED_FILES]:
+    def line(f, has_meta):
         notes = []
         if has_meta:
             notes.append(".meta も")
@@ -88,22 +85,88 @@ def lock_message(event):
                 notes.append(f"{_plain(f.get('owner') or '（不明）')} さんのロック")
             if f.get("locked_at"):
                 notes.append(f"{jst(f['locked_at'])} から")
-        line = f"・ {_code(f['path'])}" + (f"（{'、'.join(notes)}）" if notes else "")
+        return _item(f["path"], notes)
+
+    return _compose(header, [line(f, m) for f, m in rows])
+
+
+def _item(path, notes):
+    return f"・ {_code(path)}" + (f"（{'、'.join(notes)}）" if notes else "")
+
+
+def _compose(header, lines):
+    """Header plus as many lines as fit (at most MAX_LISTED_FILES), then "ほか N 件" for the rest"""
+    out = [header]
+    length = len(header)
+    for line in lines[:MAX_LISTED_FILES]:
         # Leave room for the "ほか N 件" line
         if length + 1 + len(line) > MAX_MESSAGE_CHARS - 20:
             break
-        lines.append(line)
+        out.append(line)
         length += 1 + len(line)
-        shown += 1
-    if len(rows) > shown:
-        lines.append(f"ほか {len(rows) - shown} 件")
-    return "\n".join(lines)
+    shown = len(out) - 1
+    if len(lines) > shown:
+        out.append(f"ほか {len(lines) - shown} 件")
+    return "\n".join(out)
+
+
+# --- Periodic check (reconcile.py): locks taken or released without the CLI ---
+
+
+def found_message(remote, locks):
+    """CLI を通らずに取られたロック（照合で見つけたもの）"""
+    rows = _group_meta(locks)
+    lines = [_item(f["path"], ([".meta も"] if m else []) +
+                   [f"{_plain(f.get('owner') or '（不明）')} さん", f"{jst(f.get('locked_at'))} から"]) for f, m in rows]
+    return _compose(f"🔍 ロックを見つけました（{_plain(_label(remote))}）", lines)
+
+
+def released_message(remote, locks):
+    """CLI を通らずに外れたロック（照合で消えていたもの）"""
+    rows = _group_meta(locks)
+    lines = [_item(f["path"], ([".meta も"] if m else []) +
+                   [f"{_plain(f.get('owner') or '（不明）')} さんのロック", f"{jst(f.get('locked_at'))} から"])
+             for f, m in rows]
+    return _compose(f"🔓 ロックが外れました（{_plain(_label(remote))}）", lines)
+
+
+def stale_message(items, days, now, failing=()):
+    """items: [(remote, lock)] で、days 日以上ロックされたままのもの。failing: 照合が失敗中で含めていないもの"""
+    def age(lock):
+        try:
+            seconds = (now - datetime.fromisoformat(lock["locked_at"].replace("Z", "+00:00"))).total_seconds()
+        except (KeyError, ValueError):
+            return "—"
+        hours = max(0, int(seconds // 3600))
+        d, h = divmod(hours, 24)
+        return f"{d}日{h}時間" if h else f"{d}日"
+
+    lines = [_item(lock["path"], [_plain(_label(remote)), f"{_plain(lock.get('owner') or '（不明）')} さん",
+                                  f"{jst(lock.get('locked_at'))} から", age(lock)])
+             for remote, lock in items]
+    text = _compose(f"⏰ {days}日以上ロックされたままのものが {len(items)} 件あります", lines)
+    if failing:
+        names = "、".join(_plain(_label(r)) for r in failing)
+        text += f"\n※ 照合に失敗しているため含めていません: {names}"
+    return text
+
+
+def check_failed_message(remote, reason):
+    return f"⚠️ ロックの照合ができませんでした（{_plain(_label(remote))}）: {_plain(reason)}"
+
+
+def check_recovered_message(remote):
+    return f"✅ ロックの照合が直りました（{_plain(_label(remote))}）"
+
+
+def _label(remote):
+    """github.com/example-org/game -> example-org/game"""
+    parts = (remote or "").split("/")
+    return "/".join(parts[1:]) if len(parts) >= 3 else (remote or "（リポジトリ不明）")
 
 
 def _repo_label(event):
-    """"github.com/example-org/game" -> "example-org/game"; falls back to the folder name"""
-    remote = event.get("remote") or ""
-    parts = remote.split("/")
-    if len(parts) >= 3:
-        return "/".join(parts[1:])
-    return remote or event.get("repo") or "（リポジトリ不明）"
+    """The remote without its host; falls back to the folder name"""
+    if event.get("remote"):
+        return _label(event["remote"])
+    return event.get("repo") or "（リポジトリ不明）"

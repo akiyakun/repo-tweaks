@@ -6,6 +6,9 @@ admin.json に置くもの:
 - webhook_url: Discord の Webhook URL
 - lockout: ログインのロック（max_failures 回、window_seconds 秒以内に失敗したら lock_seconds 秒ロック）
 - session_hours: ログインが続く時間
+- repos: 照合するリポジトリ [{id, remote, username, token}]（token は画面では伏せ字）
+- reconcile: 照合の間隔（interval_minutes）
+- stale: 滞留の警告（enabled、days 日以上、毎日 time に送る。時刻は日本時間）
 """
 
 import copy
@@ -24,7 +27,13 @@ DEFAULTS = {
     "webhook_url": "",
     "lockout": {"max_failures": 3, "window_seconds": 180, "lock_seconds": 900},
     "session_hours": 12,
+    "repos": [],
+    "reconcile": {"interval_minutes": 60},
+    "stale": {"enabled": True, "days": 3, "time": "10:00"},
 }
+
+MIN_INTERVAL, MAX_INTERVAL = 10, 1440
+MIN_STALE_DAYS, MAX_STALE_DAYS = 1, 365
 
 
 class SettingsStore:

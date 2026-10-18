@@ -6,8 +6,9 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 ## 進め方
 
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
-- 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）。
-- 次の候補は、サーバーが定期的に LFS のロック一覧を照合して、CLI を通らないロック・解除も通知すること（HANDOFF のフェーズ 3）と、`status`（`.gitattributes` の lockable と突き合わせ）。通知先は Discord（Slack は後回し）。
+- 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）、Step 5（サーバーによる定期的な照合と滞留の警告。GitHub のみ）。
+- 次の候補は、`status`（`.gitattributes` の lockable と突き合わせ）、Unity 拡張（HANDOFF のフェーズ 2）、GitLab への照合の対応。通知先は Discord（Slack は後回し）。
+- Step 5 は未確認：GitHub のトークンにどの権限が要るか、NAS から GitHub の LFS ロック API に届くか（利用者が確かめる）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
 ## 実機で確かめたこと（GitHub、Mac / Windows）
@@ -16,6 +17,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 - Windows で大文字・小文字の違うパス（`readme.md`）を指定しても、`README.md` として扱われ、他人のロックを正しく検出する。
 - **他人のロックの強制解除には、GitHub ではリポジトリの admin 権限が必要。** 書き込み権限だけでは `You must have admin access to force delete a lock` で拒否される（2026-10-18 確認）。GitLab は未確認。
 - **GitHub では、自分のロックでも `git lfs unlock --force` は admin 権限が要る**（Windows で確認）。そのため、自分のロックの `--force` は `git lfs unlock --id`（`--force` なし）で外す。git-lfs 3.7 の `--id` は未コミットの変更の確認結果を使っていないので通る（将来の git-lfs で変わる可能性あり）。
+- Step 4 の通知は Mac と Windows（別アカウント）の両方から Discord に届く。名前は LFS のユーザー名になり、`.meta` は元のファイルの行にまとまる（2026-10-18 確認）。
 - GitHub は `git lfs lock` の応答に owner を入れない。通知の名前は、ロックの一覧の ours の owner から引き直す（通知するときだけ `git lfs locks` を1回多く呼ぶ）。
 - 未コミットの変更があると、自分のロックでも Git LFS が解除を拒む（`Cannot unlock file with uncommitted changes`）。
 - サーバー 0.2.0 は NAS の Docker で動き、Mac のブラウザから管理画面に入れる。Discord の Webhook へのテスト送信、CLI の `ping` も成功（2026-10-18 確認）。
@@ -55,6 +57,8 @@ repo-tweaks/
 - 通知：CLI は lock / unlock の結果から `lock` / `unlock` / `force_unlock` のイベント（`files`）を作ってサーバーへ送る。送れなくても終了コードは変えない（最初の失敗で残りは送らない）。サーバー未設定なら送らずに1行知らせ（`repo-tweaks.notify false` で消える）、トークンだけ無いときは警告する。`--no-notify` / `repo-tweaks.notify false` で止める。`user` は LFS サーバーの名前（`git lfs lock --json` の owner、または自分のロックの owner）を優先し、無ければ git の user.name。
 - サーバーはイベントをメモリに最大 1000 件、1 件あたりパスは先頭 20 件だけ持つ（全体の数は `file_count`）。mem_limit 128m に収めるため。
 - Discord の文面は server/repo_tweaks_server/messages.py（1操作1メッセージ、.meta は持ち主が同じときだけまとめる、1800 文字の予算で行を足し残りは「ほか N 件」）。利用者が決める文字列（パス・名前）は書式として解釈させず、送信時は `allowed_mentions: {"parse": []}` でメンションを止める。投稿は応答のあと（BackgroundTask）。
+- 照合（server/repo_tweaks_server/reconcile.py）：前回のロック一覧と比べ、増えた・消えたもののうち通知済みでないものを流す。通知済みは「remote + ロックの ID」で state.json に残し、CLI のイベント（`files` の `id`）も記録する。初回は数えるだけ。失敗は「失敗し始め」と「直った」ときだけ通知（リポジトリごとにどんな例外も失敗として記録し、ほかは続ける）。通知済みの ID は、照合で見ていないものは 7 日で忘れる。取られて 2 分以内のロックは `pending` として次の照合まで持ち越す（CLI の通知との行き違いを防ぐ）。remote は小文字にそろえる。照合中に登録が消えたら結果を保存しない。滞留の警告は照合が失敗中のリポジトリを除く。
+- GitHub の LFS ロック API（server/repo_tweaks_server/lfs_api.py）：`https://github.com/<o>/<r>.git/info/lfs/locks`、Basic 認証。送り先は github.com だけ、リダイレクトとプロキシは使わない（トークンをよそへ送らない）。
 - `notify` は hook の中で動くので、git の起動回数を増やさない（`git config --get-regexp` と `git rev-parse` を1回ずつ）。
 
 ## 環境

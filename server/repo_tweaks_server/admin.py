@@ -9,6 +9,7 @@
 import asyncio
 import os
 import re
+import secrets
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -19,10 +20,11 @@ from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from . import __version__
+from .lfs_api import parse_repo
 from .messages import jst
 from .notify import is_valid_webhook, mask_webhook
 from .security import LoginGuard, Sessions, hash_password, same_token, verify_password
-from .settings import DEFAULT_PASSWORD
+from .settings import DEFAULT_PASSWORD, MAX_INTERVAL, MAX_STALE_DAYS, MIN_INTERVAL, MIN_STALE_DAYS
 
 HERE = Path(__file__).parent
 SESSION_COOKIE = "rt_session"
@@ -62,7 +64,26 @@ class SecurityHeaders:
         await self.app(scope, receive, send_with_headers)
 
 
-def admin_routes(store, notifier, recent_events):
+GITHUB_USER = re.compile(r"^[A-Za-z0-9-]{1,39}$")
+HHMM = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
+def mask_token(token):
+    """画面に出すときは、最後の 4 文字だけ見せる"""
+    return "…" + token[-4:] if token else ""
+
+
+def parse_int(text, low, high, what):
+    try:
+        value = int(str(text).strip())
+    except ValueError:
+        value = None
+    if value is None or not low <= value <= high:
+        raise ValueError(f"{what}は {low}〜{high} の整数にしてください")
+    return value
+
+
+def admin_routes(store, notifier, recent_events, reconciler):
     """管理画面のルート。recent_events() は直近の受信（新しい順）を返す"""
     settings = store.load()
     sessions = Sessions(lifetime_seconds=int(settings["session_hours"]) * 3600)
@@ -179,12 +200,92 @@ def admin_routes(store, notifier, recent_events):
     async def index(request, token, session, form):
         current = store.load()
         messages, session["flash"] = session["flash"], []
+        checked = reconciler.snapshot()
+        repos = [{
+            "id": repo["id"], "remote": repo["remote"], "username": repo["username"],
+            "token": mask_token(repo["token"]), "state": checked.get(repo["remote"], {}),
+        } for repo in current["repos"]]
+        next_run = reconciler.next_run()
         return templates.TemplateResponse(request, "index.html", {
             "csrf": session["csrf"], "flash": messages, "version": __version__,
             "webhook_masked": mask_webhook(current["webhook_url"]),
             "default_password": current["password_is_default"],
             "min_password": MIN_PASSWORD_LENGTH, "events": recent_events()[:20],
+            "repos": repos, "reconcile": current["reconcile"], "stale": current["stale"],
+            "next_run": next_run.isoformat() if next_run else None,
+            "min_interval": MIN_INTERVAL, "max_interval": MAX_INTERVAL,
+            "min_stale_days": MIN_STALE_DAYS, "max_stale_days": MAX_STALE_DAYS,
         })
+
+    # --- periodic check ---
+
+    @login_required
+    async def add_repo(request, token, session, form):
+        username = (form.get("username") or "").strip()
+        secret = (form.get("token") or "").strip()
+        try:
+            remote = parse_repo(form.get("url"))
+            if not GITHUB_USER.match(username):
+                raise ValueError("GitHub のユーザー名を入れてください（英数字とハイフン、39 文字まで）")
+            if not secret or len(secret) > 255 or any(c.isspace() for c in secret):
+                raise ValueError("トークンを入れてください（空白なし、255 文字まで）")
+            if any(r["remote"] == remote for r in store.load()["repos"]):
+                raise ValueError(f"{remote} はもう登録されています（変えるときは、削除してから登録し直してください）")
+        except ValueError as e:
+            flash(session, "error", f"リポジトリを登録できませんでした: {e}")
+            return back()
+        repo = {"id": secrets.token_hex(8), "remote": remote, "username": username, "token": secret}
+        store.update(lambda s: s["repos"].append(repo))
+        reconciler.run_soon()
+        flash(session, "ok", f"{remote} を登録しました。すぐに 1 回目の照合をします（1 回目は今のロックを数えるだけで、通知はしません）。")
+        return back()
+
+    @login_required
+    async def delete_repo(request, token, session, form):
+        repo_id = form.get("id", "")
+        removed = [r for r in store.load()["repos"] if r["id"] == repo_id]
+        if not removed:
+            flash(session, "error", "そのリポジトリは登録されていません（画面を開き直してください）。")
+            return back()
+        store.update(lambda s: s.update({"repos": [r for r in s["repos"] if r["id"] != repo_id]}))
+        reconciler.forget(removed[0]["remote"])
+        flash(session, "ok", f"{removed[0]['remote']} の登録を削除しました（トークンも消しました）。")
+        return back()
+
+    @login_required
+    async def save_reconcile(request, token, session, form):
+        try:
+            minutes = parse_int(form.get("interval_minutes"), MIN_INTERVAL, MAX_INTERVAL, "照合の間隔（分）")
+        except ValueError as e:
+            flash(session, "error", str(e))
+            return back()
+        store.update(lambda s: s["reconcile"].update({"interval_minutes": minutes}))
+        flash(session, "ok", f"照合の間隔を {minutes} 分にしました。")
+        return back()
+
+    @login_required
+    async def run_now(request, token, session, form):
+        if reconciler.request_run():
+            flash(session, "ok", "照合を始めました。少し待ってから画面を開き直すと、結果が出ます。")
+        else:
+            flash(session, "error", "続けて押されたため、受け付けませんでした。1 分ほど待ってから押してください。")
+        return back()
+
+    @login_required
+    async def save_stale(request, token, session, form):
+        try:
+            days = parse_int(form.get("days"), MIN_STALE_DAYS, MAX_STALE_DAYS, "日数")
+            time = (form.get("time") or "").strip()
+            if not HHMM.match(time):
+                raise ValueError("時刻は 00:00〜23:59 の形で入れてください")
+        except ValueError as e:
+            flash(session, "error", str(e))
+            return back()
+        enabled = form.get("enabled") == "1"
+        store.update(lambda s: s["stale"].update({"enabled": enabled, "days": days, "time": time}))
+        flash(session, "ok", f"滞留の警告を{'有効' if enabled else '無効'}にしました（{days} 日以上、毎日 {time}）。" if enabled
+              else "滞留の警告を無効にしました。")
+        return back()
 
     @login_required
     async def save_webhook(request, token, session, form):
@@ -243,6 +344,11 @@ def admin_routes(store, notifier, recent_events):
         Route("/webhook", save_webhook, methods=["POST"]),
         Route("/webhook/test", test_webhook, methods=["POST"]),
         Route("/password", change_password, methods=["POST"]),
+        Route("/repos/add", add_repo, methods=["POST"]),
+        Route("/repos/delete", delete_repo, methods=["POST"]),
+        Route("/reconcile", save_reconcile, methods=["POST"]),
+        Route("/reconcile/run", run_now, methods=["POST"]),
+        Route("/stale", save_stale, methods=["POST"]),
         Mount("/static", StaticFiles(directory=str(HERE / "static")), name="static"),
     ]
     return routes, guard

@@ -25,7 +25,7 @@ _TEMP_DIRS = []
 atexit.register(lambda: [t.cleanup() for t in _TEMP_DIRS])
 
 
-def make_client(max_events=100, notifier=None, data_dir=None):
+def make_client(max_events=100, notifier=None, data_dir=None, fetcher=None):
     """A client with its own data folder, or with `data_dir` to share one (like a restarted server)."""
     tmp = None
     if not data_dir:
@@ -33,7 +33,8 @@ def make_client(max_events=100, notifier=None, data_dir=None):
         _TEMP_DIRS.append(tmp)
     settings = Settings(token=TOKEN, allowed_hosts=("testserver",), max_events=max_events,
                         data_dir=data_dir or tmp.name)
-    client = TestClient(create_app(settings, notifier=notifier), follow_redirects=False)
+    app = create_app(settings, notifier=notifier, fetcher=fetcher or (lambda *a: []), run_scheduler=False)
+    client = TestClient(app, follow_redirects=False)
     client.tmp = tmp
     return client
 

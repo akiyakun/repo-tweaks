@@ -5,6 +5,7 @@
 - POST /api/events  CLI・git hook からの通知を受け取る（lock / unlock / force_unlock は Discord にも投稿する）
 - GET  /api/events  受け取った通知の直近の一覧（メモリにだけ置く。再起動で消える）
 - /、/login など    管理画面（admin.py）
+- 動いている間ずっと: ロックの定期的な照合と滞留の警告（reconcile.py）
 
 安全のための決まり:
 - /api/ は Bearer トークン（REPO_TWEAKS_TOKEN）が必須。管理画面はパスワードでログインする
@@ -12,6 +13,8 @@
 - 本文は MAX_BODY_BYTES まで
 """
 
+import asyncio
+import contextlib
 import itertools
 import json
 import logging
@@ -30,8 +33,10 @@ from starlette.routing import Route
 from . import __version__
 from .admin import SecurityHeaders, admin_routes
 from .config import Settings
+from .lfs_api import fetch_locks
 from .messages import LOCK_EVENTS, lock_message
 from .notify import Notifier
+from .reconcile import Reconciler, StateStore
 from .security import same_token
 from .settings import SettingsStore
 
@@ -98,7 +103,7 @@ def parse_event(data):
 
 
 def parse_files(value):
-    """files: [{"path", "owner"?, "locked_at"?}]（ロック・解除したファイル）"""
+    """files: [{"path", "id"?, "owner"?, "locked_at"?}]（ロック・解除したファイル。id は二重通知の防止に使う）"""
     if not isinstance(value, list) or len(value) > MAX_FILES:
         raise ValueError(f"files は {MAX_FILES} 件までのリストにしてください")
     files = []
@@ -109,7 +114,7 @@ def parse_files(value):
         if path is None:
             raise ValueError(f"files の path は {MAX_PATH_LENGTH} 文字以内の1行の文字列にしてください")
         entry = {"path": path}
-        for key in ("owner", "locked_at"):
+        for key in ("id", "owner", "locked_at"):
             if item.get(key) is not None:
                 text = _clean_text(item[key])
                 if text is None:
@@ -123,10 +128,12 @@ def _error(status, message):
     return JSONResponse({"ok": False, "error": message}, status_code=status)
 
 
-def create_app(settings=None, notifier=None):
+def create_app(settings=None, notifier=None, fetcher=None, run_scheduler=True):
+    """fetcher / run_scheduler: tests replace the GitHub client and do not start the background loop"""
     settings = settings or Settings.from_env()
     store = SettingsStore(Path(settings.data_dir) / "admin.json")
     notifier = notifier or Notifier(store)
+    reconciler = Reconciler(store, StateStore(Path(settings.data_dir) / "state.json"), notifier, fetcher or fetch_locks)
     events = deque(maxlen=settings.max_events)
     ids = itertools.count(1)
 
@@ -167,6 +174,7 @@ def create_app(settings=None, notifier=None):
         log.info("受信 #%d event=%s repo=%s remote=%s branch=%s commit=%s user=%s files=%d", event["id"],
                  event["event"], event.get("repo", "-"), event.get("remote", "-"), event.get("branch", "-"),
                  event.get("commit", "-")[:12], event.get("user", "-"), len(event.get("files", [])))
+        reconciler.record_cli_event(event)
         text = lock_message(event) if notifier.is_configured() else None
         if "files" in event:
             event["file_count"] = len(event["files"])
@@ -184,7 +192,18 @@ def create_app(settings=None, notifier=None):
     async def list_events(request):
         return JSONResponse({"ok": True, "events": list(reversed(events))})
 
-    admin, guard = admin_routes(store, notifier, lambda: list(reversed(events)))
+    admin, guard = admin_routes(store, notifier, lambda: list(reversed(events)), reconciler)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        task = asyncio.create_task(reconciler.loop()) if run_scheduler else None
+        try:
+            yield
+        finally:
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
     app = Starlette(
         routes=[
             Route("/health", health),
@@ -197,7 +216,9 @@ def create_app(settings=None, notifier=None):
             Middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts)),
             Middleware(SecurityHeaders),
         ],
+        lifespan=lifespan,
     )
     app.state.store = store
+    app.state.reconciler = reconciler
     app.state.guard = guard
     return app

@@ -92,16 +92,21 @@ fn notify_enabled(no_notify: bool, configured: Option<String>) -> bool {
 
 /// What to tell the server: one event per kind of change that actually happened.
 fn notify_events(results: &[(Target, Outcome)]) -> Vec<(&'static str, Vec<EventFile>)> {
-    let plain = |t: &Target| EventFile { path: t.path.clone(), owner: None, locked_at: None };
+    let own = |t: &Target, id: Option<String>| EventFile { path: t.path.clone(), id, owner: None, locked_at: None };
+    let our_id = |t: &Target| match &t.state {
+        State::Ours(lock) => Some(lock.id.clone()),
+        _ => None,
+    };
     let mut locked = Vec::new();
     let mut unlocked = Vec::new();
     let mut forced = Vec::new();
     for (target, outcome) in results {
         match outcome {
-            Outcome::Locked(_) => locked.push(plain(target)),
-            Outcome::Unlocked => unlocked.push(plain(target)),
+            Outcome::Locked { id, .. } => locked.push(own(target, id.clone())),
+            Outcome::Unlocked => unlocked.push(own(target, our_id(target))),
             Outcome::ForceUnlocked(lock) => forced.push(EventFile {
                 path: target.path.clone(),
+                id: Some(lock.id.clone()),
                 owner: Some(lock.owner.clone()),
                 locked_at: Some(format_rfc3339(lock.locked_at)),
             }),
@@ -120,7 +125,7 @@ fn notify_events(results: &[(Target, Outcome)]) -> Vec<(&'static str, Vec<EventF
 /// after a plain lock; send_events then asks the server.)
 fn lfs_user(results: &[(Target, Outcome)]) -> Option<String> {
     results.iter().find_map(|(target, outcome)| match (outcome, &target.state) {
-        (Outcome::Locked(Some(name)), _) => Some(name.clone()),
+        (Outcome::Locked { owner: Some(name), .. }, _) => Some(name.clone()),
         (_, State::Ours(lock)) => Some(lock.owner.clone()),
         _ => None,
     })
@@ -170,7 +175,7 @@ fn send_events(config: &GitConfig, events: Vec<(&'static str, Vec<EventFile>)>, 
 fn describe(outcome: &Outcome, now: OffsetDateTime) -> (&'static str, Option<String>) {
     let since = |l: &Lock| format_jst(l.locked_at, now);
     match outcome {
-        Outcome::Locked(_) => ("ロックしました", None),
+        Outcome::Locked { .. } => ("ロックしました", None),
         Outcome::AlreadyOurs => ("ロック済み", Some("自分がロック中".into())),
         Outcome::HeldByOther(l) => ("できません", Some(format!("{} さんが {} からロック中", l.owner, since(l)))),
         Outcome::NoSuchFile => ("できません", Some("ファイルがありません".into())),
@@ -230,7 +235,7 @@ struct JsonResult {
 impl JsonResult {
     fn new(target: &Target, outcome: &Outcome) -> Self {
         let (result, lock, message) = match outcome {
-            Outcome::Locked(_) => ("locked", None, None),
+            Outcome::Locked { .. } => ("locked", None, None),
             Outcome::AlreadyOurs => ("already_ours", None, None),
             Outcome::HeldByOther(l) => ("held_by_other", Some(l), None),
             Outcome::NoSuchFile => ("no_such_file", None, None),
@@ -274,8 +279,8 @@ mod tests {
     #[test]
     fn renders_aligned_results() {
         let results = vec![
-            (target("Assets/Main.unity", false), Outcome::Locked(None)),
-            (target("Assets/Main.unity.meta", true), Outcome::Locked(None)),
+            (target("Assets/Main.unity", false), Outcome::Locked { id: None, owner: None }),
+            (target("Assets/Main.unity.meta", true), Outcome::Locked { id: None, owner: None }),
             (target("README.md", false), Outcome::AlreadyOurs),
             (target("Assets/Art/hero.psd", false), Outcome::HeldByOther(bob())),
             (target("Assets/Art/hero.psd.meta", true), Outcome::SkippedPair),
@@ -304,7 +309,7 @@ mod tests {
         assert_eq!(row["ok"], false);
         assert_eq!(row["owner"], "bob");
         assert_eq!(row["locked_at"], "2026-10-14T01:00:00Z");
-        let row = serde_json::to_value(JsonResult::new(&target("a.psd.meta", true), &Outcome::Locked(None))).unwrap();
+        let row = serde_json::to_value(JsonResult::new(&target("a.psd.meta", true), &Outcome::Locked { id: None, owner: None })).unwrap();
         assert_eq!(row["ok"], true);
         assert_eq!(row["meta_pair"], true);
         assert!(row.get("owner").is_none());
@@ -314,7 +319,7 @@ mod tests {
     fn failures_set_exit_code() {
         assert!(exit_status(&[(target("a", false), Outcome::NotLocked)]).is_ok());
         assert_eq!(
-            exit_status(&[(target("a", false), Outcome::NoSuchFile), (target("b", false), Outcome::Locked(None))]),
+            exit_status(&[(target("a", false), Outcome::NoSuchFile), (target("b", false), Outcome::Locked { id: None, owner: None })]),
             Err("1 件は処理できませんでした".into())
         );
     }
@@ -332,8 +337,8 @@ mod tests {
     #[test]
     fn events_group_what_changed() {
         let results = vec![
-            (target("a.unity", false), Outcome::Locked(None)),
-            (target("a.unity.meta", true), Outcome::Locked(None)),
+            (target("a.unity", false), Outcome::Locked { id: Some("11".into()), owner: None }),
+            (target("a.unity.meta", true), Outcome::Locked { id: None, owner: None }),
             (target("b.psd", false), Outcome::HeldByOther(bob())),
             (target("c.psd", false), Outcome::Unlocked),
             (target("Assets/Art/hero.psd", false), Outcome::ForceUnlocked(bob())),
@@ -350,6 +355,8 @@ mod tests {
             ]
         );
         let forced = &events[2].1[0];
+        assert_eq!(forced.id.as_deref(), Some("2"));
+        assert_eq!(events[0].1[0].id.as_deref(), Some("11"));
         assert_eq!(forced.owner.as_deref(), Some("bob"));
         assert_eq!(forced.locked_at.as_deref(), Some("2026-10-14T01:00:00Z"));
         // Nothing changed: nothing to send
@@ -360,7 +367,7 @@ mod tests {
     fn lfs_user_comes_from_the_lock_server() {
         let mine = Lock { owner: "alice-gh".into(), ..bob() };
         let ours = Target { path: "c.psd".into(), pair_of: None, state: State::Ours(mine) };
-        assert_eq!(lfs_user(&[(target("a.psd", false), Outcome::Locked(Some("alice-gh".into())))]).as_deref(), Some("alice-gh"));
+        assert_eq!(lfs_user(&[(target("a.psd", false), Outcome::Locked { id: Some("9".into()), owner: Some("alice-gh".into()) })]).as_deref(), Some("alice-gh"));
         assert_eq!(lfs_user(&[(ours, Outcome::Unlocked)]).as_deref(), Some("alice-gh"));
         // Only other people's locks: unknown, the caller falls back to user.name
         assert_eq!(lfs_user(&[(target("b.psd", false), Outcome::ForceUnlocked(bob()))]), None);
