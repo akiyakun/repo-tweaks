@@ -5,7 +5,7 @@
 //! 2. git config repo-tweaks.server / repo-tweaks.token
 //!    (GUI clients such as Fork do not load shell profiles, so git config is the reliable place)
 
-use crate::git::{GitConfig, KEY_SERVER, KEY_TOKEN};
+use repo_tweaks_core::git::{GitConfig, KEY_SERVER, KEY_TOKEN};
 
 pub struct Config {
     pub server: String,

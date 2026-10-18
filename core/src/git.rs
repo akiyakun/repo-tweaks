@@ -5,16 +5,23 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 pub const KEY_SERVER: &str = "repo-tweaks.server";
 pub const KEY_TOKEN: &str = "repo-tweaks.token";
+/// Git lowercases keys in `--get-regexp` output, so this is `staleDays` as users write it.
+pub const KEY_STALE_DAYS: &str = "repo-tweaks.staledays";
 const KEY_USER: &str = "user.name";
 const KEY_REMOTE: &str = "remote.origin.url";
 
+/// Run `git <args>` and return the raw output (for callers that need stderr).
+pub fn output(args: &[&str]) -> std::io::Result<Output> {
+    Command::new("git").args(args).output()
+}
+
 /// Run `git <args>` and return stdout, or None on any failure.
 fn git(args: &[&str]) -> Option<String> {
-    let output = Command::new("git").args(args).output().ok()?;
+    let output = output(args).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -26,7 +33,7 @@ pub struct GitConfig(HashMap<String, String>);
 
 impl GitConfig {
     pub fn read() -> Self {
-        let pattern = r"^(repo-tweaks\.(server|token)|user\.name|remote\.origin\.url)$";
+        let pattern = r"^(repo-tweaks\.(server|token|staledays)|user\.name|remote\..+\.url)$";
         // Exit code 1 (no match) also lands here as an empty config.
         Self::parse(&git(&["config", "--get-regexp", pattern]).unwrap_or_default())
     }
@@ -43,6 +50,16 @@ impl GitConfig {
     pub fn get(&self, key: &str) -> Option<String> {
         self.0.get(key).filter(|v| !v.is_empty()).cloned()
     }
+
+    /// Whether any remote is configured (Git LFS needs one to ask for locks).
+    pub fn has_remote(&self) -> bool {
+        self.0.keys().any(|k| k.starts_with("remote.") && k.ends_with(".url"))
+    }
+}
+
+/// Root of the repository containing the current directory, or None outside a repository.
+pub fn toplevel() -> Option<String> {
+    git(&["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string())
 }
 
 /// Information about the repository in the current directory. Missing values stay None.
@@ -64,7 +81,7 @@ impl RepoInfo {
                 (lines.next().flatten(), lines.next().flatten(), lines.next().flatten())
             }
             // No commits yet: HEAD does not resolve, but the repository may still exist.
-            None => (git(&["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string()), None, None),
+            None => (toplevel(), None, None),
         };
         Self::build(config, toplevel, commit, branch)
     }
@@ -142,6 +159,8 @@ mod tests {
         assert_eq!(config.get(KEY_USER).as_deref(), Some("local user"));
         assert_eq!(config.get(KEY_SERVER).as_deref(), Some("http://a"));
         assert_eq!(config.get(KEY_TOKEN), None);
+        assert!(config.has_remote());
+        assert!(!GitConfig::parse("user.name a\n").has_remote());
     }
 
     #[test]

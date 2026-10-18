@@ -6,7 +6,8 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 ## 進め方
 
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
-- 現在は **Step 0（CLI ↔ サーバーの疎通テスト）** が完了した段階。次は `git lfs locks --verify --json` の解釈と `repo-tweaks list` の予定。
+- 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）。
+- 次は Step 2 で `lock` / `unlock`（`--force` は確認を挟む）の予定。その後 `status`（lockable と突き合わせ）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
 ## 言語・書き方
@@ -18,8 +19,9 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 
 ```text
 repo-tweaks/
-├─ Cargo.toml        Rust workspace（members: cli）
-├─ cli/              Rust の CLI。コマンド名 repo-tweaks（ping / notify / events）
+├─ Cargo.toml        Rust workspace（members: core, cli）
+├─ core/             Rust のライブラリ。git.rs（git の呼び出し・設定）、locks.rs（ロックの解釈・古さ・日本時間の表示）、lfs.rs（git lfs locks の実行とエラーの見分け）
+├─ cli/              Rust の CLI。コマンド名 repo-tweaks（list / ping / notify / events）
 ├─ server/           Python 3.12 + Starlette + uvicorn。Docker で動かす
 ├─ hooks/            git hook のサンプル（post-commit）
 └─ unity/            Unity Editor 拡張（未着手）
@@ -30,6 +32,9 @@ repo-tweaks/
 - hook は git 操作を止めない（失敗しても終了コード 0、タイムアウト 3 秒）。
 - `hooks/post-commit` は `git lfs install` の post-commit を置き換えるため、`git lfs post-commit` の行を必ず残す（消すと lockable の読み取り専用化が効かなくなる）。
 - リポジトリの識別子は `remote.origin.url` を正規化した `host/owner/repo`（認証情報・ポートは除く）。フォルダ名に頼らない。
+- ロジックは core に置き、CLI は表示と引数だけにする（GUI・Unity からも使うため）。
+- `git lfs locks --verify --json` は、リポジトリ外・remote なし・認証失敗でも終了コード 0 で空の一覧を返す。必ず事前の確認と stderr（`fatal:` / `error`）の確認をして、空の一覧を「ロックなし」と誤表示しない。JSON の `[]`（`--verify` なしの形）も受け付けない。
+- 時刻は表示が日本時間（固定 +09:00）、`--json` は UTC。古さの既定は 3 日、git config `repo-tweaks.staleDays` か `--stale-days` で変更（1〜365）。
 - `notify` は hook の中で動くので、git の起動回数を増やさない（`git config --get-regexp` と `git rev-parse` を1回ずつ）。
 
 ## 環境

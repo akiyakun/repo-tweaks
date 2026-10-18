@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::git::RepoInfo;
+use repo_tweaks_core::git::RepoInfo;
 
 // Keep hooks snappy: never stall a commit for long when the server is down.
 const TIMEOUT: Duration = Duration::from_secs(3);

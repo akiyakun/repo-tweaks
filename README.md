@@ -1,7 +1,9 @@
 # repo-tweaks
 
 Git LFS のロックを土台にした、ファイルロック管理ツール（作成中）。
-いまは **Step 0: CLI ↔ サーバーの疎通テスト** の段階です。
+いまは **Step 1: ロック一覧の表示（`repo-tweaks list`）** まで出来ています。
+
+Step 0 で作った、CLI とサーバーの疎通の流れ：
 
 ```text
 git commit
@@ -13,6 +15,7 @@ git commit
 
 | フォルダ | 中身 |
 |---|---|
+| `core/` | Rust のライブラリ。git / git lfs の呼び出し、ロックの解釈と古さの判定（CLI・GUI・Unity で共通に使う） |
 | `cli/` | Rust の CLI（コマンド名 `repo-tweaks`） |
 | `server/` | Python（Starlette）のサーバー。Docker で動かす |
 | `hooks/` | git hook のサンプル |
@@ -63,9 +66,41 @@ repo-tweaks events            # サーバーが受け取った通知を確認
 
 | コマンド | 内容 |
 |---|---|
+| `repo-tweaks list [--json] [--stale-days N]` | ロックの一覧を、自分のロック / 他人のロックに分けて表示する。古いロックに印を付ける |
 | `repo-tweaks ping` | サーバーにつながるか、トークンが正しいかを確かめる |
 | `repo-tweaks notify --event <種類>` | 今のリポジトリ（名前と origin の URL）・ブランチ・コミット・ユーザー名を送る |
 | `repo-tweaks events [--limit N]` | サーバーが受け取った通知を新しい順に表示する |
+
+## ロックの一覧（list）
+
+Git のリポジトリの中で実行します。`git lfs locks --verify --json` で GitHub / GitLab からロックを取ってきて表示します（読むだけで、ロックは変えません）。
+
+```text
+自分のロック（1）
+  afl/README.md             10/18 01:30 から  1日2時間
+
+他人のロック（2）
+  Assets/Scenes/Main.unity  bob   10/14 10:00 から  4日17時間  ⚠ 古い
+  Assets/Art/hero.psd       山田  10/18 18:20 から  9時間
+
+⚠ 3日以上ロックされたままのものが 1 件あります
+```
+
+- 時刻は日本時間です。一覧は、古いロックから順に並べます。
+- 「古い」とみなす日数は、既定で 3 日です。`--stale-days N`、またはリポジトリごと・全体の git config で変えられます（1〜365）。
+
+  ```bash
+  git config --global repo-tweaks.staleDays 5
+  ```
+
+- `--json` は、ほかのツール（Unity 拡張や GUI）から使うための出力です。時刻は UTC です。
+
+  ```json
+  {"stale_days": 3, "ours": [{"id": "57707244", "path": "afl/README.md", "owner": "alice",
+    "locked_at": "2026-10-17T16:30:58Z", "age_seconds": 93600, "stale": false}], "theirs": []}
+  ```
+
+- `git lfs locks` は、リポジトリの外、remote が無いとき、ログインに失敗したときでも、エラーにならずに空の一覧を返します。`list` はこれらを先に確かめるか、git lfs のエラー出力から見分けて、理由を表示します（「ロックはありません」と誤って表示しないため）。
 
 ## サーバーの API
 
