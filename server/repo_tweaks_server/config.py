@@ -31,7 +31,8 @@ class Settings:
             max_events = int(env.get("REPO_TWEAKS_MAX_EVENTS", "100"))
         except ValueError:
             max_events = 0
-        if not 1 <= max_events <= 10000:
-            raise ValueError("REPO_TWEAKS_MAX_EVENTS は 1〜10000 の整数にしてください")
+        # Each kept event holds at most STORED_FILES paths, so 1000 events stay within the container's memory
+        if not 1 <= max_events <= 1000:
+            raise ValueError("REPO_TWEAKS_MAX_EVENTS は 1〜1000 の整数にしてください")
         data_dir = env.get("REPO_TWEAKS_DATA_DIR", "").strip() or DEFAULT_DATA_DIR
         return cls(token=token, allowed_hosts=hosts, max_events=max_events, data_dir=data_dir)

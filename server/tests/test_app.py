@@ -50,7 +50,7 @@ class SettingsTest(unittest.TestCase):
             Settings.from_env({"REPO_TWEAKS_TOKEN": TOKEN, "REPO_TWEAKS_ALLOWED_HOSTS": "*"})
 
     def test_max_events_must_be_integer(self):
-        for value in ("100件", "", "0", "10001"):
+        for value in ("100件", "", "0", "1001"):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "REPO_TWEAKS_MAX_EVENTS"):
                 Settings.from_env({"REPO_TWEAKS_TOKEN": TOKEN, "REPO_TWEAKS_MAX_EVENTS": value})
 

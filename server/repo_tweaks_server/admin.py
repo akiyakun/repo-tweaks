@@ -9,7 +9,6 @@
 import asyncio
 import os
 import re
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -20,6 +19,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from . import __version__
+from .messages import jst
 from .notify import is_valid_webhook, mask_webhook
 from .security import LoginGuard, Sessions, hash_password, same_token, verify_password
 from .settings import DEFAULT_PASSWORD
@@ -30,7 +30,6 @@ LOGIN_CSRF_COOKIE = "rt_login_csrf"
 MIN_PASSWORD_LENGTH = 8
 # Admin forms are a few short fields; anything bigger is refused before parsing (also before login)
 MAX_FORM_BYTES = 8 * 1024
-JST = timezone(timedelta(hours=9))
 
 
 class SecurityHeaders:
@@ -63,16 +62,6 @@ class SecurityHeaders:
         await self.app(scope, receive, send_with_headers)
 
 
-def _jst(value):
-    """「2026-10-18T04:05:54Z」を「10/18 13:05」にする（画面用）"""
-    if not value:
-        return "—"
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(JST).strftime("%m/%d %H:%M")
-    except ValueError:
-        return value
-
-
 def admin_routes(store, notifier, recent_events):
     """管理画面のルート。recent_events() は直近の受信（新しい順）を返す"""
     settings = store.load()
@@ -80,7 +69,7 @@ def admin_routes(store, notifier, recent_events):
     guard = LoginGuard(**settings["lockout"])
 
     templates = Jinja2Templates(directory=str(HERE / "templates"))
-    templates.env.filters["jst"] = _jst
+    templates.env.filters["jst"] = jst
 
     def current_session(request):
         token = request.cookies.get(SESSION_COOKIE)

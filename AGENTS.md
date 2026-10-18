@@ -6,8 +6,8 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 ## 進め方
 
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
-- 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）。
-- 次は、ロック・解除の成功を CLI からサーバーへ送り、Discord に通知する。通知先は Discord（Slack は後回し）。その後 `status`（`.gitattributes` の lockable と突き合わせ）。
+- 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）。
+- 次の候補は、サーバーが定期的に LFS のロック一覧を照合して、CLI を通らないロック・解除も通知すること（HANDOFF のフェーズ 3）と、`status`（`.gitattributes` の lockable と突き合わせ）。通知先は Discord（Slack は後回し）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
 ## 実機で確かめたこと（GitHub、Mac / Windows）
@@ -50,6 +50,9 @@ repo-tweaks/
 - パスは `git ls-files` の `:(icase,literal)` で git の表記に合わせ、ロックとは大文字・小文字を無視して突き合わせる（大小違いで二重ロックしない）。
 - 解除はパスで行う（Git LFS の「未コミットの変更があれば拒否」を生かす）。git lfs の出力形式は git-lfs 3.7 の `commands/command_lock.go` / `command_unlock.go` に合わせている。
 - 時刻は表示が日本時間（固定 +09:00）、`--json` は UTC。古さの既定は 3 日、git config `repo-tweaks.staleDays` か `--stale-days` で変更（1〜365）。
+- 通知：CLI は lock / unlock の結果から `lock` / `unlock` / `force_unlock` のイベント（`files`）を作ってサーバーへ送る。送れなくても終了コードは変えない（最初の失敗で残りは送らない）。サーバー未設定なら黙って送らず、トークンだけ無いときは警告する。`--no-notify` / `repo-tweaks.notify false` で止める。`user` は LFS サーバーの名前（`git lfs lock --json` の owner、または自分のロックの owner）を優先し、無ければ git の user.name。
+- サーバーはイベントをメモリに最大 1000 件、1 件あたりパスは先頭 20 件だけ持つ（全体の数は `file_count`）。mem_limit 128m に収めるため。
+- Discord の文面は server/repo_tweaks_server/messages.py（1操作1メッセージ、.meta は持ち主が同じときだけまとめる、1800 文字の予算で行を足し残りは「ほか N 件」）。利用者が決める文字列（パス・名前）は書式として解釈させず、送信時は `allowed_mentions: {"parse": []}` でメンションを止める。投稿は応答のあと（BackgroundTask）。
 - `notify` は hook の中で動くので、git の起動回数を増やさない（`git config --get-regexp` と `git rev-parse` を1回ずつ）。
 
 ## 環境

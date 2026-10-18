@@ -25,11 +25,37 @@ pub struct Event {
     pub commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    /// Files locked or unlocked (lock / unlock / force_unlock events)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<EventFile>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct EventFile {
+    pub path: String,
+    /// Whose lock it was (force_unlock)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked_at: Option<String>,
 }
 
 impl Event {
     pub fn new(event: String, info: RepoInfo) -> Self {
-        Event { event, repo: info.repo, remote: info.remote, branch: info.branch, commit: info.commit, user: info.user }
+        Event {
+            event,
+            repo: info.repo,
+            remote: info.remote,
+            branch: info.branch,
+            commit: info.commit,
+            user: info.user,
+            files: Vec::new(),
+        }
+    }
+
+    pub fn with_files(mut self, files: Vec<EventFile>) -> Self {
+        self.files = files;
+        self
     }
 }
 
@@ -38,6 +64,9 @@ impl Event {
 pub struct ReceivedEvent {
     pub id: u64,
     pub received_at: String,
+    /// The server keeps only the first few paths; this is the full count
+    #[serde(default)]
+    pub file_count: Option<usize>,
     #[serde(flatten)]
     pub event: Event,
 }
@@ -57,7 +86,12 @@ impl fmt::Display for ReceivedEvent {
             or_dash(&e.remote),
             or_dash(&e.branch),
             or_dash(&e.user),
-        )
+        )?;
+        let files = self.file_count.unwrap_or(e.files.len());
+        if files > 0 {
+            write!(f, " files={files}")?;
+        }
+        Ok(())
     }
 }
 
@@ -145,6 +179,24 @@ mod tests {
         let event = Event::new("post-commit".into(), RepoInfo { repo: Some("demo".into()), ..Default::default() });
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json, serde_json::json!({"event": "post-commit", "repo": "demo"}));
+    }
+
+    #[test]
+    fn lock_event_json_matches_the_server() {
+        // server/repo_tweaks_server/app.py parse_files reads exactly these keys
+        let info = RepoInfo { remote: Some("github.com/example-org/game".into()), user: Some("alice".into()), ..Default::default() };
+        let files = vec![
+            EventFile { path: "a.psd".into(), owner: None, locked_at: None },
+            EventFile { path: "b.psd".into(), owner: Some("bob".into()), locked_at: Some("2026-10-14T01:00:00Z".into()) },
+        ];
+        let json = serde_json::to_value(Event::new("force_unlock".into(), info).with_files(files)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "event": "force_unlock", "remote": "github.com/example-org/game", "user": "alice",
+                "files": [{"path": "a.psd"}, {"path": "b.psd", "owner": "bob", "locked_at": "2026-10-14T01:00:00Z"}]
+            })
+        );
     }
 
     #[test]

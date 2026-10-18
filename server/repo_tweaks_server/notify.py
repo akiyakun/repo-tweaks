@@ -31,6 +31,10 @@ class Notifier:
     def __init__(self, store):
         self.store = store
 
+    def is_configured(self):
+        """Whether a webhook is saved (no webhook is a normal setup, not an error)"""
+        return bool(self.store.load().get("webhook_url"))
+
     async def send(self, text):
         """通知を送る。戻り値は (送れたか, 利用者向けの結果の説明)。URL はログや画面に出さない"""
         url = self.store.load().get("webhook_url", "")
@@ -42,7 +46,9 @@ class Notifier:
 
 
 def _post(url, text):
-    body = json.dumps({"username": "repo-tweaks", "content": text[:1900]}).encode("utf-8")
+    # allowed_mentions: file and user names are chosen by users; never let them ping @everyone or anyone
+    payload = {"username": "repo-tweaks", "content": text[:1900], "allowed_mentions": {"parse": []}}
+    body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url, data=body, method="POST",
         headers={"Content-Type": "application/json", "User-Agent": f"repo-tweaks/{__version__}"},

@@ -11,6 +11,7 @@ pub const KEY_SERVER: &str = "repo-tweaks.server";
 pub const KEY_TOKEN: &str = "repo-tweaks.token";
 /// Git lowercases keys in `--get-regexp` output, so this is `staleDays` as users write it.
 pub const KEY_STALE_DAYS: &str = "repo-tweaks.staledays";
+pub const KEY_NOTIFY: &str = "repo-tweaks.notify";
 const KEY_USER: &str = "user.name";
 const KEY_REMOTE: &str = "remote.origin.url";
 
@@ -38,7 +39,7 @@ pub struct GitConfig(HashMap<String, String>);
 
 impl GitConfig {
     pub fn read() -> Self {
-        let pattern = r"^(repo-tweaks\.(server|token|staledays)|user\.name|remote\..+\.url)$";
+        let pattern = r"^(repo-tweaks\.(server|token|staledays|notify)|user\.name|remote\..+\.url)$";
         // Exit code 1 (no match) also lands here as an empty config.
         Self::parse(&git(&["config", "--get-regexp", pattern]).unwrap_or_default())
     }
@@ -68,7 +69,7 @@ pub fn toplevel() -> Option<String> {
 }
 
 /// Information about the repository in the current directory. Missing values stay None.
-#[derive(Default, Debug, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct RepoInfo {
     pub repo: Option<String>,
     /// Stable identity across clones: host/path of remote.origin.url without credentials

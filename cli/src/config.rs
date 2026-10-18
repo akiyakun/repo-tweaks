@@ -24,6 +24,11 @@ impl Config {
     }
 }
 
+/// Whether a server address is configured at all (notifications are optional).
+pub fn server_is_set(git: &GitConfig) -> bool {
+    lookup("REPO_TWEAKS_SERVER", git, KEY_SERVER).is_some()
+}
+
 fn lookup(env_name: &str, git: &GitConfig, git_key: &str) -> Option<String> {
     std::env::var(env_name)
         .ok()

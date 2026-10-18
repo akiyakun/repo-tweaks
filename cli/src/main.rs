@@ -42,6 +42,9 @@ enum Command {
         /// 結果を JSON で出力する
         #[arg(long)]
         json: bool,
+        /// サーバー（Discord）に通知しない
+        #[arg(long)]
+        no_notify: bool,
     },
     /// ロックを解除する（ロック中の .meta も一緒に解除）
     Unlock {
@@ -60,6 +63,9 @@ enum Command {
         /// 結果を JSON で出力する
         #[arg(long)]
         json: bool,
+        /// サーバー（Discord）に通知しない
+        #[arg(long)]
+        no_notify: bool,
     },
     /// サーバーにつながるか（トークンが正しいか）を確かめる
     Ping,
@@ -94,9 +100,11 @@ fn run(command: Command) -> Result<(), String> {
     let client = || config::Config::load(&git_config).map(Client::new);
     match command {
         Command::List { json, stale_days } => list::run(&git_config, json, stale_days)?,
-        Command::Lock { paths, no_meta, json } => lock::lock(&git_config, &paths, !no_meta, json)?,
-        Command::Unlock { paths, force, yes, no_meta, json } => {
-            lock::unlock(&git_config, &paths, !no_meta, force, yes, json)?
+        Command::Lock { paths, no_meta, json, no_notify } => {
+            lock::lock(&git_config, &paths, &lock::Options { with_meta: !no_meta, json, no_notify })?
+        }
+        Command::Unlock { paths, force, yes, no_meta, json, no_notify } => {
+            lock::unlock(&git_config, &paths, &lock::Options { with_meta: !no_meta, json, no_notify }, force, yes)?
         }
         Command::Ping => {
             let client = client()?;

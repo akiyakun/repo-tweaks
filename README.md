@@ -2,7 +2,7 @@
 
 
 Git LFS のロックを土台にした、ファイルロック管理ツール（作成中）。
-いまは **Step 3: サーバーの管理画面（Discord の通知先の登録）と NAS での起動** まで出来ています。
+いまは **Step 4: ロック・解除の Discord への通知** まで出来ています。
 
 Step 0 で作った、CLI とサーバーの疎通の流れ：
 
@@ -74,7 +74,7 @@ repo-tweaks ping
 
 | 欄 | 内容 |
 |---|---|
-| 通知（Discord） | Webhook URL の保存（画面では伏せ字）・削除・テスト送信。今はログインのロックだけを通知します（ロックの取得・解除の通知は次の Step） |
+| 通知（Discord） | Webhook URL の保存（画面では伏せ字）・削除・テスト送信。CLI でのロック・解除・強制解除と、管理画面のログインのロックを通知します |
 | 直近の受信 | CLI・git hook から受け取った通知の、新しい順に 20 件（メモリだけ。再起動で消えます） |
 | パスワードの変更 | 8 文字以上。初期パスワード（admin）は使えません。変えると、ほかのブラウザのログインは切れます |
 
@@ -183,10 +183,10 @@ repo-tweaks: 1 件は処理できませんでした
   - 元のファイルをロック・解除できなかったときは、相方は「しませんでした」として触りません（アセットと `.meta` の持ち主が分かれないようにするため）。
   - `--no-meta` で止められます。
 - **未コミットの変更**：自分のロックでも、未コミットの変更があるファイルは Git LFS が解除を拒みます。コミットしてから解除するか、`--force` を付けてください。削除・移動して手元に無いファイルの解除も `--force` が必要です。
-- **他人のロックの強制解除**：`--force` を付けると、次のように確認してから解除します。持ち主には通知されません。
+- **他人のロックの強制解除**：`--force` を付けると、次のように確認してから解除します。
 
   ```text
-  次の他人のロックを強制解除します（持ち主には通知されません）:
+  次の他人のロックを強制解除します:
     Assets/Art/hero.psd  bob  10/14 10:00 から
   よろしいですか？ [y/N]:
   ```
@@ -194,13 +194,43 @@ repo-tweaks: 1 件は処理できませんでした
   Unity や GUI から呼ぶときは、呼ぶ側の画面で確認したうえで `--yes` を付けます。入力できない状態で `--yes` が無いときは、何もしません。強制解除できるかどうかは、GitHub / GitLab での権限によります。**GitHub ではリポジトリの管理者（admin）権限が必要です**（書き込み権限だけでは「You must have admin access to force delete a lock」で断られます）。GitLab は未確認です。
 - `--json` は、ファイルごとの結果（`result`：`locked` / `already_ours` / `held_by_other` / `no_such_file` / `is_directory` / `unlocked` / `force_unlocked` / `not_locked` / `others_lock` / `skipped_pair` / `failed`、`ok`、他人のロックなら `owner` と `locked_at`）を出力します。
 
+## Discord への通知
+
+`repo-tweaks lock` / `unlock` が成功すると、CLI がサーバーへ送り、サーバーが Discord に投稿します（1回の操作で1メッセージ。`.meta` は、元のファイルと持ち主が同じなら、その行にまとめます）。
+
+```text
+🔒 alice がロックしました（example-org/game）
+・ Assets/Scenes/Main.unity（.meta も）
+・ Assets/Art/hero.psd
+
+🔓 alice が解除しました（example-org/game）
+・ Assets/Scenes/Main.unity（.meta も）
+
+⚠️ alice が bob さんのロックを強制解除しました（example-org/game）
+・ Assets/Art/hero.psd（10/14 10:00 から）
+```
+
+- 名前は GitHub / GitLab のユーザー名（`list` の持ち主と同じ）です。分からないとき（他人のロックの強制解除だけ、など）は git の `user.name` を使います。リポジトリは origin の URL（`github.com/` などは省きます）です。
+- ファイルが多い・パスが長いときは、Discord の文字数に収まる分だけ並べ、残りは「ほか N 件」にします。長いパスは先頭を「…」で省きます（ファイル名が見えるように）。
+- サーバーが設定されていない（`repo-tweaks.server` が無い）ときは、何も送りません。サーバーはあるのにトークンが無いとき・サーバーに届かないときは警告を出します（最初に失敗した時点で、残りの通知は送りません）。ロック・解除は済んでいるので、終了コードは変えません。
+- 管理画面で Webhook URL を登録していないときは、サーバーは Discord に送りません（ログにも警告を出しません）。
+- 送りたくないときは `--no-notify` を付けるか、git config で止めます。
+
+  ```bash
+  git config --global repo-tweaks.notify false
+  ```
+
+- **通知されないもの**：Fork や `git lfs lock` で直接取ったロック・解除（CLI を通らないため）。あとの Step で、サーバーが定期的にロックの一覧を照合して拾う予定です。
+- ファイル名や名前に `@everyone` などがあっても、Discord のメンションにはなりません（送信時にメンションを止めています）。
+- サーバーは受け取った応答を先に返し、Discord への投稿はそのあとで行います（CLI の 3 秒の打ち切りに影響しないため）。投稿に失敗したときは、サーバーのログに残ります。
+
 ## サーバーの API
 
 | メソッド・パス | 認証 | 内容 |
 |---|---|---|
 | `GET /health` | なし | 動いているかの確認 |
 | `GET /api/ping` | Bearer | トークンを含めた疎通確認 |
-| `POST /api/events` | Bearer | 通知を受け取る（本文は 16KB まで） |
+| `POST /api/events` | Bearer | 通知を受け取る（本文は 64KB まで。`lock` / `unlock` / `force_unlock` は `files` が必須で、Discord にも投稿する） |
 | `GET /api/events` | Bearer | 直近の通知（メモリのみ。再起動で消える） |
 
 ## テスト

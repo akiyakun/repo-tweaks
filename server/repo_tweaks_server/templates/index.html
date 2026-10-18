@@ -11,7 +11,7 @@
 
 <section class="card">
   <h2>通知（Discord）</h2>
-  <p class="muted">ログインのロックをしたときに通知します。ロックの取得・解除の通知は、次の版で追加します。</p>
+  <p class="muted">CLI（<code>repo-tweaks lock</code> / <code>unlock</code>）でロックの取得・解除・強制解除をしたときと、管理画面のログインのロックをしたときに通知します。</p>
   <p>今の通知先: {% if webhook_masked %}<code>{{ webhook_masked }}</code>{% else %}<span class="muted">未設定</span>{% endif %}</p>
   <form method="post" action="/webhook">
     <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -36,7 +36,7 @@
       <thead><tr><th>#</th><th>受信</th><th>種類</th><th>リポジトリ</th><th>ブランチ</th><th>ユーザー</th></tr></thead>
       <tbody>
       {% for e in events %}
-        <tr><td>{{ e.id }}</td><td>{{ e.received_at | jst }}</td><td>{{ e.event }}</td>
+        <tr><td>{{ e.id }}</td><td>{{ e.received_at | jst }}</td><td>{{ e.event }}{% if e.file_count %}（{{ e.file_count }} 件）{% endif %}</td>
           <td class="wrap">{{ e.remote or e.repo or "—" }}</td><td class="wrap">{{ e.branch or "—" }}</td><td>{{ e.user or "—" }}</td></tr>
       {% endfor %}
       </tbody>

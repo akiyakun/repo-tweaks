@@ -37,7 +37,8 @@ pub struct Target {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
-    Locked,
+    /// Carries the lock owner's name as the server reports it (the user's GitHub / GitLab name)
+    Locked(Option<String>),
     /// Lock: the current user already holds it
     AlreadyOurs,
     /// Lock: someone else holds it
@@ -207,7 +208,7 @@ impl Plan {
                 }
             }
         };
-        let ok = |o: &Outcome| matches!(o, Outcome::Locked | Outcome::AlreadyOurs);
+        let ok = |o: &Outcome| matches!(o, Outcome::Locked(_) | Outcome::AlreadyOurs);
         let outcomes = self.run_in_two_rounds(decide, ok, run_lock);
         self.targets.into_iter().zip(outcomes).collect()
     }
@@ -309,6 +310,14 @@ fn run_lock(ctx: &RepoContext, paths: &[&str]) -> HashMap<String, Outcome> {
 #[derive(Deserialize)]
 struct LockedPath {
     path: String,
+    #[serde(default)]
+    owner: Option<LockOwner>,
+}
+
+#[derive(Deserialize)]
+struct LockOwner {
+    #[serde(default)]
+    name: String,
 }
 
 fn lock_results(paths: &[&str], stdout: &str, stderr: &str) -> HashMap<String, Outcome> {
@@ -316,8 +325,8 @@ fn lock_results(paths: &[&str], stdout: &str, stderr: &str) -> HashMap<String, O
     paths
         .iter()
         .map(|&path| {
-            let outcome = if locked.iter().any(|l| l.path == path) {
-                Outcome::Locked
+            let outcome = if let Some(lock) = locked.iter().find(|l| l.path == path) {
+                Outcome::Locked(lock.owner.as_ref().map(|o| o.name.clone()).filter(|n| !n.is_empty()))
             } else {
                 // The stderr line naming this path, else the first error line
                 let line = stderr.lines().map(str::trim).find(|l| mentions(l, path)).unwrap_or_else(|| lfs::first_line(stderr));
@@ -447,7 +456,7 @@ mod tests {
         let stdout = r#"[{"id":"9","path":"a.psd","owner":{"name":"alice"},"locked_at":"2026-10-18T00:00:00Z"}]"#;
         let stderr = "Locking b.psd.meta failed: other\nLocking b.psd failed: Lock exists\n";
         let got = lock_results(&["a.psd", "b.psd"], stdout, stderr);
-        assert_eq!(got["a.psd"], Outcome::Locked);
+        assert_eq!(got["a.psd"], Outcome::Locked(Some("alice".into())));
         assert!(matches!(&got["b.psd"], Outcome::Failed(m) if m.contains("すでにロック") && m.contains("b.psd")));
     }
 
@@ -482,15 +491,15 @@ mod tests {
         let mut rounds = Vec::new();
         let results = p.run_in_two_rounds(
             |_| Step::Run,
-            |o| matches!(o, Outcome::Locked),
+            |o| matches!(o, Outcome::Locked(_)),
             |_, paths| {
                 rounds.push(paths.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-                paths.iter().map(|p| (p.to_string(), Outcome::Locked)).collect()
+                paths.iter().map(|p| (p.to_string(), Outcome::Locked(None))).collect()
             },
         );
         // Named paths go in the first git lfs call, partners in the second
         assert_eq!(rounds, vec![vec!["a.unity", "b.unity"], vec!["a.unity.meta", "b.unity.meta"]]);
-        assert_eq!(results, vec![Outcome::Locked; 4]);
+        assert_eq!(results, vec![Outcome::Locked(None); 4]);
 
         let p = plan(vec![
             target("a.unity", None, State::Theirs(bob)),
@@ -501,7 +510,7 @@ mod tests {
                 State::Theirs(l) => Step::Done(Outcome::HeldByOther(l.clone())),
                 _ => Step::Run,
             },
-            |o| matches!(o, Outcome::Locked),
+            |o| matches!(o, Outcome::Locked(_)),
             |_, _| panic!("nothing should be locked"),
         );
         assert!(matches!(results[0], Outcome::HeldByOther(_)));

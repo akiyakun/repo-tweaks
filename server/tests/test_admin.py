@@ -22,8 +22,12 @@ WEBHOOK = "https://discord.com/api/webhooks/123456789/abcdefghijklmnopqrstuvwxyz
 
 
 class FakeNotifier:
-    def __init__(self):
+    def __init__(self, configured=True):
         self.sent = []
+        self.configured = configured
+
+    def is_configured(self):
+        return self.configured
 
     async def send(self, text):
         self.sent.append(text)

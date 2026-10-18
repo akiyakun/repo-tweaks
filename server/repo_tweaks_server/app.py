@@ -2,7 +2,7 @@
 
 - GET  /health      動いているかの確認（認証なし。Docker のヘルスチェック用）
 - GET  /api/ping    トークンの確認を含めた疎通確認（CLI の `repo-tweaks ping`）
-- POST /api/events  CLI・git hook からの通知を受け取る
+- POST /api/events  CLI・git hook からの通知を受け取る（lock / unlock / force_unlock は Discord にも投稿する）
 - GET  /api/events  受け取った通知の直近の一覧（メモリにだけ置く。再起動で消える）
 - /、/login など    管理画面（admin.py）
 
@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.middleware import Middleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
@@ -29,14 +30,20 @@ from starlette.routing import Route
 from . import __version__
 from .admin import SecurityHeaders, admin_routes
 from .config import Settings
+from .messages import LOCK_EVENTS, lock_message
 from .notify import Notifier
 from .security import same_token
 from .settings import SettingsStore
 
 log = logging.getLogger("repo_tweaks")
 
-MAX_BODY_BYTES = 16 * 1024
+# Room for a lock event listing MAX_FILES long paths
+MAX_BODY_BYTES = 64 * 1024
 MAX_FIELD_LENGTH = 200
+MAX_PATH_LENGTH = 1024
+MAX_FILES = 200
+# Events stay in memory; keep only the first few paths of each (the count is kept in file_count)
+STORED_FILES = 20
 # Fields a client may send; anything else is dropped
 EVENT_FIELDS = ("event", "repo", "remote", "branch", "commit", "user", "sent_at")
 # Control chars, surrogates, and Unicode line/paragraph separators (U+0085 is Cc, U+2028 Zl, U+2029 Zp).
@@ -60,9 +67,9 @@ async def _read_body(request):
     return bytes(body)
 
 
-def _clean_text(value):
+def _clean_text(value, max_length=MAX_FIELD_LENGTH):
     """短い1行の文字列だけを通す（ログを崩す改行・制御文字は不可）"""
-    if not isinstance(value, str) or not value or len(value) > MAX_FIELD_LENGTH:
+    if not isinstance(value, str) or not value or len(value) > max_length:
         return None
     if any(unicodedata.category(c) in REJECTED_CATEGORIES for c in value):
         return None
@@ -83,7 +90,33 @@ def parse_event(data):
         event[key] = text
     if "event" not in event:
         raise ValueError("event（通知の種類）が必要です")
+    if data.get("files") is not None:
+        event["files"] = parse_files(data["files"])
+    if event["event"] in LOCK_EVENTS and not event.get("files"):
+        raise ValueError(f"{event['event']} には files（ロック・解除したファイル）が必要です")
     return event
+
+
+def parse_files(value):
+    """files: [{"path", "owner"?, "locked_at"?}]（ロック・解除したファイル）"""
+    if not isinstance(value, list) or len(value) > MAX_FILES:
+        raise ValueError(f"files は {MAX_FILES} 件までのリストにしてください")
+    files = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("files の中身はオブジェクトにしてください")
+        path = _clean_text(item.get("path"), MAX_PATH_LENGTH)
+        if path is None:
+            raise ValueError(f"files の path は {MAX_PATH_LENGTH} 文字以内の1行の文字列にしてください")
+        entry = {"path": path}
+        for key in ("owner", "locked_at"):
+            if item.get(key) is not None:
+                text = _clean_text(item[key])
+                if text is None:
+                    raise ValueError(f"files の {key} は {MAX_FIELD_LENGTH} 文字以内の1行の文字列にしてください")
+                entry[key] = text
+        files.append(entry)
+    return files
 
 
 def _error(status, message):
@@ -131,10 +164,21 @@ def create_app(settings=None, notifier=None):
         event["id"] = next(ids)
         event["received_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         events.append(event)
-        log.info("受信 #%d event=%s repo=%s remote=%s branch=%s commit=%s user=%s", event["id"], event["event"],
-                 event.get("repo", "-"), event.get("remote", "-"), event.get("branch", "-"),
-                 event.get("commit", "-")[:12], event.get("user", "-"))
-        return JSONResponse({"ok": True, "id": event["id"]}, status_code=201)
+        log.info("受信 #%d event=%s repo=%s remote=%s branch=%s commit=%s user=%s files=%d", event["id"],
+                 event["event"], event.get("repo", "-"), event.get("remote", "-"), event.get("branch", "-"),
+                 event.get("commit", "-")[:12], event.get("user", "-"), len(event.get("files", [])))
+        text = lock_message(event) if notifier.is_configured() else None
+        if "files" in event:
+            event["file_count"] = len(event["files"])
+            event["files"] = event["files"][:STORED_FILES]
+        # Post after responding: the CLI gives up after 3 seconds, Discord may take longer
+        background = BackgroundTask(post_to_discord, event["id"], text) if text else None
+        return JSONResponse({"ok": True, "id": event["id"]}, status_code=201, background=background)
+
+    async def post_to_discord(event_id, text):
+        ok, message = await notifier.send(text)
+        if not ok:
+            log.warning("通知 #%d を Discord に送れませんでした: %s", event_id, message)
 
     @require_auth
     async def list_events(request):
