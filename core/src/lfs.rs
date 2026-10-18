@@ -68,6 +68,8 @@ pub(crate) fn explain(line: &str) -> String {
         || lower.contains("publickey")
     {
         "サーバーにログインできませんでした。Fork や git push が使えるか（認証情報や SSH の鍵が使えるか）を確かめてください。"
+    } else if lower.contains("admin access") {
+        "この操作にはリポジトリの管理者権限が必要です（GitHub では、他人のロックの強制解除は管理者だけができます）。"
     } else if lower.contains("403") || lower.contains("forbidden") || lower.contains("permission") {
         "権限がありません。ログインしているアカウントに、このリポジトリへの書き込み権限があるか確かめてください。"
     } else if lower.contains("locking api") || lower.contains("not supported") || lower.contains("does not support") {
@@ -118,6 +120,7 @@ mod tests {
         assert!(explain("Cannot unlock file with uncommitted changes").contains("未コミットの変更"));
         assert!(explain("Lock exists").contains("すでにロック"));
         assert!(explain("api error: Forbidden (403)").contains("書き込み権限"));
+        assert!(explain("You must have admin access to force delete a lock").contains("管理者権限"));
         // SSH key problems are login problems, not permissions on locks
         assert!(explain("git@github.com: Permission denied (publickey).").contains("ログインできませんでした"));
         assert_eq!(first_line("\n  \nfirst\nsecond"), "first");

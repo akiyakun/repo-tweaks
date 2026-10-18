@@ -225,7 +225,23 @@ impl Plan {
             _ => Step::Run,
         };
         let ok = |o: &Outcome| matches!(o, Outcome::Unlocked | Outcome::ForceUnlocked(_) | Outcome::NotLocked);
-        let outcomes = self.run_in_two_rounds(decide, ok, |ctx, paths| run_unlock(ctx, paths, force));
+        // Our own locks under --force: by ID without --force (see unlock_own_by_id)
+        let own_ids: HashMap<String, String> = self
+            .targets
+            .iter()
+            .filter_map(|t| match &t.state {
+                State::Ours(lock) if force => Some((t.path.clone(), lock.id.clone())),
+                _ => None,
+            })
+            .collect();
+        let outcomes = self.run_in_two_rounds(decide, ok, |ctx, paths| {
+            let (own, rest): (Vec<&str>, Vec<&str>) = paths.iter().partition(|p| own_ids.contains_key(**p));
+            let mut results = if rest.is_empty() { HashMap::new() } else { run_unlock(ctx, &rest, force) };
+            for path in own {
+                results.insert(path.to_string(), unlock_own_by_id(ctx, &own_ids[path]));
+            }
+            results
+        });
         // Report whose lock was removed by force
         self.targets
             .into_iter()
@@ -347,6 +363,29 @@ fn run_unlock(ctx: &RepoContext, paths: &[&str], force: bool) -> HashMap<String,
     match git::output_in(&ctx.root, &args) {
         Err(_) => all_failed(paths, "git が見つかりません"),
         Ok(out) => unlock_results(paths, &String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr)),
+    }
+}
+
+/// Remove our own lock even with uncommitted changes.
+///
+/// `git lfs unlock --force` asks the server to break the lock, and GitHub only allows that for
+/// repository admins, even on your own lock. `--id` without `--force` is an ordinary unlock by the
+/// owner; git-lfs 3.7 looks up the file's status for it but does not act on the result
+/// (commands/command_unlock.go), so uncommitted changes do not block it. If a later git-lfs starts
+/// refusing, the explained error tells the user to commit or discard the changes.
+fn unlock_own_by_id(ctx: &RepoContext, id: &str) -> Outcome {
+    match git::output_in(&ctx.root, &["lfs", "unlock", "--json", "--id", id]) {
+        Err(_) => Outcome::Failed("git が見つかりません".into()),
+        Ok(out) => unlock_by_id_result(&String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr)),
+    }
+}
+
+fn unlock_by_id_result(stdout: &str, stderr: &str) -> Outcome {
+    let rows: Vec<UnlockedPath> = serde_json::from_str(stdout.trim()).unwrap_or_default();
+    match rows.first() {
+        Some(r) if r.unlocked => Outcome::Unlocked,
+        Some(r) if !r.reason.is_empty() => Outcome::Failed(lfs::explain(&r.reason)),
+        _ => Outcome::Failed(lfs::explain(lfs::first_line(stderr))),
     }
 }
 
@@ -515,6 +554,16 @@ mod tests {
         );
         assert!(matches!(results[0], Outcome::HeldByOther(_)));
         assert_eq!(results[1], Outcome::SkippedPair);
+    }
+
+    #[test]
+    fn unlock_by_id_results() {
+        // Shape from git-lfs 3.7: {id, unlocked} on success, {id, unlocked: false, reason} on failure
+        assert_eq!(unlock_by_id_result(r#"[{"id":"7","unlocked":true}]"#, ""), Outcome::Unlocked);
+        let failed = unlock_by_id_result(r#"[{"id":"7","unlocked":false,"reason":"Unable to unlock 7: Cannot unlock file with uncommitted changes"}]"#, "");
+        assert!(matches!(&failed, Outcome::Failed(m) if m.contains("未コミットの変更")), "{failed:?}");
+        let empty = unlock_by_id_result("", "fatal: boom\n");
+        assert!(matches!(&empty, Outcome::Failed(m) if m.contains("boom")), "{empty:?}");
     }
 
     #[test]

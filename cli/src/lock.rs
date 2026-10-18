@@ -7,6 +7,7 @@ use time::OffsetDateTime;
 use unicode_width::UnicodeWidthStr;
 
 use repo_tweaks_core::git::{GitConfig, KEY_NOTIFY, RepoInfo};
+use repo_tweaks_core::lfs;
 use repo_tweaks_core::locks::{Lock, format_jst, format_rfc3339};
 use repo_tweaks_core::ops::{self, Outcome, State, Target};
 
@@ -115,6 +116,8 @@ fn notify_events(results: &[(Target, Outcome)]) -> Vec<(&'static str, Vec<EventF
 
 /// The current user's name on the lock server (GitHub / GitLab), the same name `list` shows as owner.
 /// Taken from a lock we just took or one of ours among the targets; None if neither is there.
+/// (GitHub leaves the owner out of the lock it returns from `git lfs lock`, so this is often None
+/// after a plain lock; send_events then asks the server.)
 fn lfs_user(results: &[(Target, Outcome)]) -> Option<String> {
     results.iter().find_map(|(target, outcome)| match (outcome, &target.state) {
         (Outcome::Locked(Some(name)), _) => Some(name.clone()),
@@ -138,7 +141,11 @@ fn send_events(config: &GitConfig, events: Vec<(&'static str, Vec<EventFile>)>, 
     };
     let client = Client::new(server);
     let mut info = RepoInfo::current(config);
-    // Prefer the lock server's name, so notices match `list`; fall back to git's user.name
+    // Prefer the lock server's name, so notices match `list`; fall back to git's user.name.
+    // One extra `git lfs locks` call, only when notifying and the name is not known yet.
+    let lfs_user = lfs_user.or_else(|| {
+        lfs::fetch_locks(config).ok().and_then(|locks| locks.ours.first().map(|l| l.owner.clone()))
+    });
     if lfs_user.is_some() {
         info.user = lfs_user;
     }

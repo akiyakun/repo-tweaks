@@ -15,6 +15,8 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 - Step 1・2 の list / lock / unlock は Mac と Windows の両方で動く（日本語の表示も文字化けしない）。別アカウントのロックは「他人のロック」に出る。
 - Windows で大文字・小文字の違うパス（`readme.md`）を指定しても、`README.md` として扱われ、他人のロックを正しく検出する。
 - **他人のロックの強制解除には、GitHub ではリポジトリの admin 権限が必要。** 書き込み権限だけでは `You must have admin access to force delete a lock` で拒否される（2026-10-18 確認）。GitLab は未確認。
+- **GitHub では、自分のロックでも `git lfs unlock --force` は admin 権限が要る**（Windows で確認）。そのため、自分のロックの `--force` は `git lfs unlock --id`（`--force` なし）で外す。git-lfs 3.7 の `--id` は未コミットの変更の確認結果を使っていないので通る（将来の git-lfs で変わる可能性あり）。
+- GitHub は `git lfs lock` の応答に owner を入れない。通知の名前は、ロックの一覧の ours の owner から引き直す（通知するときだけ `git lfs locks` を1回多く呼ぶ）。
 - 未コミットの変更があると、自分のロックでも Git LFS が解除を拒む（`Cannot unlock file with uncommitted changes`）。
 - サーバー 0.2.0 は NAS の Docker で動き、Mac のブラウザから管理画面に入れる。Discord の Webhook へのテスト送信、CLI の `ping` も成功（2026-10-18 確認）。
 
