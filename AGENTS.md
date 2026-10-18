@@ -52,7 +52,7 @@ repo-tweaks/
 - パスは `git ls-files` の `:(icase,literal)` で git の表記に合わせ、ロックとは大文字・小文字を無視して突き合わせる（大小違いで二重ロックしない）。
 - 解除はパスで行う（Git LFS の「未コミットの変更があれば拒否」を生かす）。git lfs の出力形式は git-lfs 3.7 の `commands/command_lock.go` / `command_unlock.go` に合わせている。
 - 時刻は表示が日本時間（固定 +09:00）、`--json` は UTC。古さの既定は 3 日、git config `repo-tweaks.staleDays` か `--stale-days` で変更（1〜365）。
-- 通知：CLI は lock / unlock の結果から `lock` / `unlock` / `force_unlock` のイベント（`files`）を作ってサーバーへ送る。送れなくても終了コードは変えない（最初の失敗で残りは送らない）。サーバー未設定なら黙って送らず、トークンだけ無いときは警告する。`--no-notify` / `repo-tweaks.notify false` で止める。`user` は LFS サーバーの名前（`git lfs lock --json` の owner、または自分のロックの owner）を優先し、無ければ git の user.name。
+- 通知：CLI は lock / unlock の結果から `lock` / `unlock` / `force_unlock` のイベント（`files`）を作ってサーバーへ送る。送れなくても終了コードは変えない（最初の失敗で残りは送らない）。サーバー未設定なら送らずに1行知らせ（`repo-tweaks.notify false` で消える）、トークンだけ無いときは警告する。`--no-notify` / `repo-tweaks.notify false` で止める。`user` は LFS サーバーの名前（`git lfs lock --json` の owner、または自分のロックの owner）を優先し、無ければ git の user.name。
 - サーバーはイベントをメモリに最大 1000 件、1 件あたりパスは先頭 20 件だけ持つ（全体の数は `file_count`）。mem_limit 128m に収めるため。
 - Discord の文面は server/repo_tweaks_server/messages.py（1操作1メッセージ、.meta は持ち主が同じときだけまとめる、1800 文字の予算で行を足し残りは「ほか N 件」）。利用者が決める文字列（パス・名前）は書式として解釈させず、送信時は `allowed_mentions: {"parse": []}` でメンションを止める。投稿は応答のあと（BackgroundTask）。
 - `notify` は hook の中で動くので、git の起動回数を増やさない（`git config --get-regexp` と `git rev-parse` を1回ずつ）。

@@ -126,10 +126,17 @@ fn lfs_user(results: &[(Target, Outcome)]) -> Option<String> {
     })
 }
 
+const NO_SERVER_NOTICE: &str = "repo-tweaks: 通知の送り先（repo-tweaks.server）が未設定なので、Discord には送っていません（この表示を消すには git config --global repo-tweaks.notify false）";
+
 /// Best effort: the locks have already changed, so a missing or unreachable server is only a warning.
 fn send_events(config: &GitConfig, events: Vec<(&'static str, Vec<EventFile>)>, lfs_user: Option<String>) {
-    // No server configured: notifications are simply not in use
-    if events.is_empty() || !config::server_is_set(config) {
+    if events.is_empty() {
+        return;
+    }
+    // Say so once: a forgotten setting would otherwise look like "nobody is locking anything".
+    // Users who do not want notifications turn this off with repo-tweaks.notify false.
+    if !config::server_is_set(config) {
+        eprintln!("{NO_SERVER_NOTICE}");
         return;
     }
     let server = match Config::load(config) {
