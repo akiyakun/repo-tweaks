@@ -18,6 +18,7 @@ git commit
 |---|---|
 | `core/` | Rust のライブラリ。git / git lfs の呼び出し、ロックの解釈と古さの判定、ロック・解除（CLI・GUI・Unity で共通に使う） |
 | `cli/` | Rust の CLI（コマンド名 `repo-tweaks`） |
+| `gui/` | GUI（Tauri v2 + React）。いまはロックの一覧を表示するだけ |
 | `server/` | Python（Starlette）のサーバー。CLI からの通知の受け口と、管理画面。Docker で動かす |
 | `hooks/` | git hook のサンプル |
 | `unity/` | Unity Editor 拡張（未着手） |
@@ -197,6 +198,30 @@ repo-tweaks: 1 件は処理できませんでした
   Unity や GUI から呼ぶときは、呼ぶ側の画面で確認したうえで `--yes` を付けます。入力できない状態で `--yes` が無いときは、何もしません。強制解除できるかどうかは、GitHub / GitLab での権限によります。**GitHub ではリポジトリの管理者（admin）権限が必要です**（書き込み権限だけでは「You must have admin access to force delete a lock」で断られます）。GitLab は未確認です。
 - `--json` は、ファイルごとの結果（`result`：`locked` / `already_ours` / `held_by_other` / `no_such_file` / `is_directory` / `unlocked` / `force_unlocked` / `not_locked` / `others_lock` / `skipped_pair` / `failed`、`ok`、他人のロックなら `owner` と `locked_at`）を出力します。
 
+## GUI（作成中）
+
+Tauri v2 + React + TypeScript + Tailwind CSS で作っています。Rust 側は `core` をそのまま使うので、表示する内容は `repo-tweaks list` と同じです。
+いまは **ロックの一覧（読むだけ）** だけです。
+
+- 「フォルダを開く」でリポジトリのフォルダを選ぶと、自分のロック / 他人のロックを表示します。古いロックには印が付き、件数の警告も出ます（日数は `repo-tweaks.staleDays`、既定 3 日）。
+- 最後に開いたフォルダは、次の起動時に自動で開きます。
+- 更新はボタンか、`Ctrl+R` / `⌘R` / `F5` です。
+- 起動時の引数でフォルダを渡せます（`repo-tweaks-gui /path/to/repo`）。Fork のカスタムコマンドから開くときに使えます。
+
+### 動かす
+
+[Tauri の前提](https://v2.tauri.app/start/prerequisites/)（Rust、Node.js、Windows は WebView2 と Visual Studio の C++ ビルドツール、Mac は Xcode のコマンドラインツール）を入れてから：
+
+```bash
+cd gui
+npm install
+npm run tauri dev      # 開発用（画面の変更がすぐに反映される）
+npm run tauri build    # 配布用（Windows は .msi / .exe、Mac は .app / .dmg）
+```
+
+- Mac で Finder から起動したアプリは `PATH` が短く、Homebrew の git-lfs が見つかりません。GUI は起動時に `/opt/homebrew/bin`・`/usr/local/bin`・`/opt/local/bin` を `PATH` に足します。
+- Windows では、git を呼ぶたびにコンソールの窓が出ないようにしています。
+
 ## Discord への通知
 
 `repo-tweaks lock` / `unlock` が成功すると、CLI がサーバーへ送り、サーバーが Discord に投稿します（1回の操作で1メッセージ。`.meta` は、元のファイルと持ち主が同じなら、その行にまとめます）。
@@ -277,6 +302,7 @@ repo-tweaks: 1 件は処理できませんでした
 
 ```bash
 cargo test
+cd gui && npm run build && (cd src-tauri && cargo test)
 cd server && python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python -m unittest discover -s tests -v
 ```

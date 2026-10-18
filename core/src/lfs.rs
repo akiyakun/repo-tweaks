@@ -14,6 +14,13 @@ pub fn fetch_locks(config: &GitConfig) -> Result<LockList, String> {
     query_locks()
 }
 
+/// Like `fetch_locks`, for the repository at `dir`. `config` must be read there too (`GitConfig::read_in`).
+pub fn fetch_locks_in(dir: &str, config: &GitConfig) -> Result<LockList, String> {
+    let ctx = RepoContext::open(dir)?;
+    require_remote(config)?;
+    query_locks_in(&ctx.root)
+}
+
 pub(crate) fn require_remote(config: &GitConfig) -> Result<(), String> {
     if config.has_remote() {
         Ok(())
@@ -24,7 +31,11 @@ pub(crate) fn require_remote(config: &GitConfig) -> Result<(), String> {
 
 /// Ask the server for all locks. Callers have already checked the repository and remote.
 pub(crate) fn query_locks() -> Result<LockList, String> {
-    let output = git::output(&["lfs", "locks", "--verify", "--json"])
+    query_locks_in(".")
+}
+
+fn query_locks_in(dir: &str) -> Result<LockList, String> {
+    let output = git::output_in(dir, &["lfs", "locks", "--verify", "--json"])
         .map_err(|_| "git が見つかりません。Git をインストールしてください".to_string())?;
     interpret(
         output.status.success(),

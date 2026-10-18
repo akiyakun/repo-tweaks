@@ -1,0 +1,18 @@
+[package]
+name = "repo-tweaks-gui"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+repo-tweaks-core = { version = "0.1.0", path = "../../core" }
+serde = { version = "1.0.229", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+time = "0.3.55"
+
+[dev-dependencies]
+serde_json = "1.0.154"
+time = { version = "0.3.55", features = ["macros"] }

@@ -12,6 +12,18 @@ pub const MAX_STALE_DAYS: u32 = 365;
 /// Times are shown in Japan time (no daylight saving, so a fixed offset is exact).
 const JST: UtcOffset = offset!(+9);
 
+/// The flag wins over git config; both must be 1..=MAX_STALE_DAYS.
+pub fn resolve_stale_days(flag: Option<u32>, configured: Option<String>) -> Result<u32, String> {
+    let (value, source) = match (flag, configured) {
+        (Some(days), _) => (Some(days), "--stale-days"),
+        (None, Some(text)) => (text.trim().parse().ok(), "git config repo-tweaks.staleDays"),
+        (None, None) => return Ok(DEFAULT_STALE_DAYS),
+    };
+    value
+        .filter(|d| (1..=MAX_STALE_DAYS).contains(d))
+        .ok_or_else(|| format!("{source} は 1〜{MAX_STALE_DAYS} の整数にしてください"))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lock {
     pub id: String,
@@ -197,6 +209,16 @@ mod tests {
                                  {"id":"3","path":"c","locked_at":"2026-10-17T00:00:00Z"}]}"#;
         let list = parse_verify_json(json).unwrap();
         assert_eq!(list.stale_count(datetime!(2026-10-18 00:00 UTC), 3), 2);
+    }
+
+    #[test]
+    fn stale_days_sources() {
+        assert_eq!(resolve_stale_days(None, None), Ok(3));
+        assert_eq!(resolve_stale_days(None, Some("7".into())), Ok(7));
+        assert_eq!(resolve_stale_days(Some(1), Some("7".into())), Ok(1));
+        assert!(resolve_stale_days(Some(0), None).unwrap_err().contains("--stale-days"));
+        assert!(resolve_stale_days(None, Some("三日".into())).unwrap_err().contains("staleDays"));
+        assert!(resolve_stale_days(None, Some("366".into())).is_err());
     }
 
     #[test]

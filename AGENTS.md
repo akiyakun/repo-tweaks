@@ -7,6 +7,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
 - 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）、Step 5（サーバーによる定期的な照合と滞留の警告。GitHub のみ）。
+- GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）を作成。Mac / Windows の実機では未確認。
 - 次の候補は、`status`（`.gitattributes` の lockable と突き合わせ）、Unity 拡張（HANDOFF のフェーズ 2）、GitLab への照合の対応。通知先は Discord（Slack は後回し）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
@@ -35,6 +36,7 @@ repo-tweaks/
 ├─ Cargo.toml        Rust workspace（members: core, cli）
 ├─ core/             Rust のライブラリ。git.rs（git の呼び出し・設定）、locks.rs（ロックの解釈・古さ・日本時間の表示）、lfs.rs（git lfs locks の実行とエラーの見分け）、paths.rs（パスをリポジトリのルートからの相対に直す）、ops.rs（ロック・解除の計画と実行）
 ├─ cli/              Rust の CLI。コマンド名 repo-tweaks（list / lock / unlock / ping / notify / events）
+├─ gui/              Tauri v2 + React + TypeScript + Tailwind CSS（shadcn/ui 風の部品は src/components/ui に手で置く）。src-tauri/ が Rust 側で、core を直接使う
 ├─ server/           Python 3.12 + Starlette + uvicorn + Jinja2。Docker で動かす。app.py（CLI 用 API）、admin.py（管理画面）、security.py / settings.py / notify.py（cloud-drive-sync の管理画面と同じ作り）
 ├─ hooks/            git hook のサンプル（post-commit）
 └─ unity/            Unity Editor 拡張（未着手）
@@ -46,6 +48,11 @@ repo-tweaks/
 - `hooks/post-commit` は `git lfs install` の post-commit を置き換えるため、`git lfs post-commit` の行を必ず残す（消すと lockable の読み取り専用化が効かなくなる）。
 - リポジトリの識別子は `remote.origin.url` を正規化した `host/owner/repo`（認証情報・ポートは除く）。フォルダ名に頼らない。
 - ロジックは core に置き、CLI は表示と引数だけにする（GUI・Unity からも使うため）。
+- GUI は CLI を呼ばず、core を直接使う。core の関数はカレントディレクトリを相手にするので、GUI 用に `GitConfig::read_in` / `RepoContext::open` / `lfs::fetch_locks_in` のようにフォルダを受け取る版を足す（GUI でカレントディレクトリを変えない。スレッドをまたいで共有されるため）。
+- GUI の表示用の文字列（日本時間・経過時間・古さ）は Rust 側（gui/src-tauri/src/view.rs）で core の format_jst / format_age を使って作り、CLI と同じ言い回しにする。
+- GUI は起動時に `git::hide_console_windows()` を呼ぶ（Windows で git の窓を出さない。CLI では呼ばない。端末で認証を聞けるようにするため）。Mac では起動時に Homebrew などの bin を PATH に足す。
+- `gui/src-tauri` は workspace の外（`exclude`）で、Cargo.lock も別。ルートの `cargo test` には入らない。
+- `.gitignore` の Python 用の `lib/` が `gui/src/lib` を隠すので、`!gui/src/lib/` で戻している。
 - サーバーの security.py / settings.py / notify.py と admin.py のログイン・CSRF・ヘッダーの処理は、cloud-drive-sync の `cds_admin` の写し。安全のための修正をしたら、もう片方にも入れるよう利用者に伝える（このリポジトリで足した修正：フォームの大きさの上限、Origin はホスト名とポートで比較、scrypt を別スレッドで実行、ロックの通知を応答のあとに送る、壊れた admin.json で 500 にしない）。
 - 管理画面の設定の既定の保存先は `server/data/dev`（起動した場所によらない。git に入れない）。
 - `git lfs locks --verify --json` は、リポジトリ外・remote なし・認証失敗でも終了コード 0 で空の一覧を返す。必ず事前の確認と stderr（`fatal:` / `error`）の確認をして、空の一覧を「ロックなし」と誤表示しない。JSON の `[]`（`--verify` なしの形）も受け付けない。
@@ -90,6 +97,8 @@ repo-tweaks/
 
 ```bash
 cargo test
+cd gui && npm run build && (cd src-tauri && cargo test)
+cd gui && npm run tauri dev   # GUI を開発モードで起動
 cd server && .venv/bin/python -m unittest discover -s tests -v
 cd server && docker compose up -d --build   # .env が必要（.env.example をコピー）
 ```

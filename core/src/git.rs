@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const KEY_SERVER: &str = "repo-tweaks.server";
 pub const KEY_TOKEN: &str = "repo-tweaks.token";
@@ -15,19 +16,48 @@ pub const KEY_NOTIFY: &str = "repo-tweaks.notify";
 const KEY_USER: &str = "user.name";
 const KEY_REMOTE: &str = "remote.origin.url";
 
+static HIDE_CONSOLE: AtomicBool = AtomicBool::new(false);
+
+/// Stop each git process from flashing a console window on Windows (for the GUI; the CLI keeps
+/// its console so git can still ask for credentials there). No effect on other platforms.
+pub fn hide_console_windows() {
+    HIDE_CONSOLE.store(true, Ordering::Relaxed);
+}
+
+fn command() -> Command {
+    #[allow(unused_mut)]
+    let mut command = Command::new("git");
+    #[cfg(windows)]
+    if HIDE_CONSOLE.load(Ordering::Relaxed) {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// Run `git <args>` and return the raw output (for callers that need stderr).
 pub fn output(args: &[&str]) -> std::io::Result<Output> {
-    Command::new("git").args(args).output()
+    command().args(args).output()
 }
 
 /// Like `output`, but run in `dir` (e.g. the repository root, for root-relative paths).
 pub fn output_in(dir: &str, args: &[&str]) -> std::io::Result<Output> {
-    Command::new("git").current_dir(dir).args(args).output()
+    command().current_dir(dir).args(args).output()
+}
+
+/// Run `git <args>` in `dir` and return stdout, or None on any failure.
+fn git_in(dir: &str, args: &[&str]) -> Option<String> {
+    stdout(output_in(dir, args))
 }
 
 /// Run `git <args>` and return stdout, or None on any failure.
 fn git(args: &[&str]) -> Option<String> {
-    let output = output(args).ok()?;
+    stdout(output(args))
+}
+
+fn stdout(output: std::io::Result<Output>) -> Option<String> {
+    let output = output.ok()?;
     if !output.status.success() {
         return None;
     }
@@ -39,9 +69,14 @@ pub struct GitConfig(HashMap<String, String>);
 
 impl GitConfig {
     pub fn read() -> Self {
+        Self::read_in(".")
+    }
+
+    /// Like `read`, but for the repository at `dir` (the GUI opens a folder instead of using the current directory).
+    pub fn read_in(dir: &str) -> Self {
         let pattern = r"^(repo-tweaks\.(server|token|staledays|notify)|user\.name|remote\..+\.url)$";
         // Exit code 1 (no match) also lands here as an empty config.
-        Self::parse(&git(&["config", "--get-regexp", pattern]).unwrap_or_default())
+        Self::parse(&git_in(dir, &["config", "--get-regexp", pattern]).unwrap_or_default())
     }
 
     fn parse(text: &str) -> Self {

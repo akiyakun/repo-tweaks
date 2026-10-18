@@ -8,9 +8,7 @@ use repo_tweaks_core::git::{GitConfig, KEY_STALE_DAYS};
 use repo_tweaks_core::lfs;
 
 use crate::text::pad;
-use repo_tweaks_core::locks::{
-    DEFAULT_STALE_DAYS, Lock, LockList, MAX_STALE_DAYS, format_age, format_jst, format_rfc3339,
-};
+use repo_tweaks_core::locks::{Lock, LockList, format_age, format_jst, format_rfc3339, resolve_stale_days};
 
 pub fn run(config: &GitConfig, json: bool, stale_days: Option<u32>) -> Result<(), String> {
     let stale_days = resolve_stale_days(stale_days, config.get(KEY_STALE_DAYS))?;
@@ -23,18 +21,6 @@ pub fn run(config: &GitConfig, json: bool, stale_days: Option<u32>) -> Result<()
         print!("{}", render(&locks, now, stale_days));
     }
     Ok(())
-}
-
-/// The flag wins over git config; both must be 1..=MAX_STALE_DAYS.
-fn resolve_stale_days(flag: Option<u32>, configured: Option<String>) -> Result<u32, String> {
-    let (value, source) = match (flag, configured) {
-        (Some(days), _) => (Some(days), "--stale-days"),
-        (None, Some(text)) => (text.trim().parse().ok(), "git config repo-tweaks.staleDays"),
-        (None, None) => return Ok(DEFAULT_STALE_DAYS),
-    };
-    value
-        .filter(|d| (1..=MAX_STALE_DAYS).contains(d))
-        .ok_or_else(|| format!("{source} は 1〜{MAX_STALE_DAYS} の整数にしてください"))
 }
 
 fn render(locks: &LockList, now: OffsetDateTime, stale_days: u32) -> String {
@@ -171,15 +157,5 @@ mod tests {
         assert_eq!(json["ours"][0]["age_seconds"], 26 * 3600);
         assert_eq!(json["theirs"][0]["stale"], true);
         assert_eq!(json["theirs"][1]["stale"], false);
-    }
-
-    #[test]
-    fn stale_days_sources() {
-        assert_eq!(resolve_stale_days(None, None), Ok(3));
-        assert_eq!(resolve_stale_days(None, Some("7".into())), Ok(7));
-        assert_eq!(resolve_stale_days(Some(1), Some("7".into())), Ok(1));
-        assert!(resolve_stale_days(Some(0), None).unwrap_err().contains("--stale-days"));
-        assert!(resolve_stale_days(None, Some("三日".into())).unwrap_err().contains("staleDays"));
-        assert!(resolve_stale_days(None, Some("366".into())).is_err());
     }
 }

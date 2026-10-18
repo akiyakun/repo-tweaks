@@ -1,3 +1,5 @@
 [workspace]
 resolver = "2"
 members = ["core", "cli"]
+# The GUI (Tauri) has its own Cargo.lock and a long build that needs WebView libraries, so `cargo test` here skips it.
+exclude = ["gui/src-tauri"]

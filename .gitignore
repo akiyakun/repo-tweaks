@@ -227,3 +227,10 @@ CLAUDE.local.md
 
 # Admin settings written when running the server on the Mac (password hash, webhook URL)
 server/data/
+
+# GUI (Tauri + Vite)
+node_modules/
+gui/dist/
+gui/src-tauri/gen/
+# The Python "lib/" rule above would hide the frontend's src/lib
+!gui/src/lib/

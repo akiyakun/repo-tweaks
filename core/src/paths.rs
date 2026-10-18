@@ -14,10 +14,19 @@ pub struct RepoContext {
 
 impl RepoContext {
     pub fn current() -> Result<Self, String> {
-        let output = git::output(&["rev-parse", "--show-toplevel", "--show-prefix"])
+        Self::rev_parse(".", "Git のリポジトリの中で実行してください")
+    }
+
+    /// The repository containing `dir` (a folder the GUI opened).
+    pub fn open(dir: &str) -> Result<Self, String> {
+        Self::rev_parse(dir, "このフォルダは Git のリポジトリではありません")
+    }
+
+    fn rev_parse(dir: &str, not_a_repo: &str) -> Result<Self, String> {
+        let output = git::output_in(dir, &["rev-parse", "--show-toplevel", "--show-prefix"])
             .map_err(|_| "git が見つかりません。Git をインストールしてください".to_string())?;
         if !output.status.success() {
-            return Err("Git のリポジトリの中で実行してください".into());
+            return Err(not_a_repo.into());
         }
         let text = String::from_utf8_lossy(&output.stdout);
         let mut lines = text.lines();
@@ -125,6 +134,15 @@ mod tests {
     use super::*;
 
     const ROOT: &str = "/work/game";
+
+    #[test]
+    fn opening_a_plain_folder_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("repo-tweaks-not-a-repo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = RepoContext::open(dir.to_str().unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(result.err().as_deref(), Some("このフォルダは Git のリポジトリではありません"));
+    }
 
     #[test]
     fn relative_paths_use_current_directory() {
