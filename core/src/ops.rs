@@ -283,13 +283,16 @@ impl Plan {
     }
 }
 
+/// `reason` is already explained ("<hint>（git lfs: <line>）"); swap the hint for one about forcing.
 fn explain_force_failure(reason: &str) -> String {
     let lower = reason.to_lowercase();
-    if lower.contains("403") || lower.contains("forbidden") || lower.contains("permission") {
-        format!("他人のロックを強制解除する権限がありません（リポジトリの管理者などの権限が必要な場合があります）。{reason}")
-    } else {
-        reason.to_string()
+    // GitHub answers "You must have admin access to force delete a lock" (checked 2026-10-18)
+    let denied = ["admin access", "403", "forbidden", "permission"].iter().any(|w| lower.contains(w));
+    if !denied {
+        return reason.to_string();
     }
+    let original = reason.find("（git lfs:").map(|i| &reason[i..]).unwrap_or(reason);
+    format!("他人のロックを強制解除する権限がありません（GitHub ではリポジトリの管理者権限が必要です。持ち主に解除を頼んでください）。{original}")
 }
 
 /// `git lfs lock --json <paths>` prints the locks it took; failures go to stderr as
@@ -509,6 +512,13 @@ mod tests {
     fn force_failures_explain_permissions() {
         assert!(explain_force_failure("api error: Forbidden (403)").contains("強制解除する権限"));
         assert_eq!(explain_force_failure("other"), "other");
+        // Real GitHub message, after lfs::explain (which has no hint for it)
+        let got = explain_force_failure(&lfs::explain("You must have admin access to force delete a lock"));
+        assert!(got.starts_with("他人のロックを強制解除する権限がありません"), "{got}");
+        assert!(got.ends_with("（git lfs: You must have admin access to force delete a lock）"), "{got}");
+        // A generic 403 hint from lfs::explain is replaced, not repeated
+        let got = explain_force_failure(&lfs::explain("Forbidden (403)"));
+        assert!(!got.contains("書き込み権限"), "{got}");
     }
 
     #[test]

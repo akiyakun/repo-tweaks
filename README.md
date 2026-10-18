@@ -1,5 +1,6 @@
 # repo-tweaks
 
+
 Git LFS のロックを土台にした、ファイルロック管理ツール（作成中）。
 いまは **Step 2: ロックの取得・解除（`repo-tweaks lock` / `unlock`）** まで出来ています。
 
@@ -132,7 +133,7 @@ repo-tweaks: 1 件は処理できませんでした
   よろしいですか？ [y/N]:
   ```
 
-  Unity や GUI から呼ぶときは、呼ぶ側の画面で確認したうえで `--yes` を付けます。入力できない状態で `--yes` が無いときは、何もしません。強制解除できるかどうかは、GitHub / GitLab での権限によります。
+  Unity や GUI から呼ぶときは、呼ぶ側の画面で確認したうえで `--yes` を付けます。入力できない状態で `--yes` が無いときは、何もしません。強制解除できるかどうかは、GitHub / GitLab での権限によります。**GitHub ではリポジトリの管理者（admin）権限が必要です**（書き込み権限だけでは「You must have admin access to force delete a lock」で断られます）。GitLab は未確認です。
 - `--json` は、ファイルごとの結果（`result`：`locked` / `already_ours` / `held_by_other` / `no_such_file` / `is_directory` / `unlocked` / `force_unlocked` / `not_locked` / `others_lock` / `skipped_pair` / `failed`、`ok`、他人のロックなら `owner` と `locked_at`）を出力します。
 
 ## サーバーの API

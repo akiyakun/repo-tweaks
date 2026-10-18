@@ -10,6 +10,13 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 - 次の候補は `status`（`.gitattributes` の lockable と突き合わせ）と、ロック・解除のサーバーへの通知（Slack 通知の Step で内容と一緒に決める）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
+## 実機で確かめたこと（GitHub、Mac / Windows）
+
+- Step 1・2 の list / lock / unlock は Mac と Windows の両方で動く（日本語の表示も文字化けしない）。別アカウントのロックは「他人のロック」に出る。
+- Windows で大文字・小文字の違うパス（`readme.md`）を指定しても、`README.md` として扱われ、他人のロックを正しく検出する。
+- **他人のロックの強制解除には、GitHub ではリポジトリの admin 権限が必要。** 書き込み権限だけでは `You must have admin access to force delete a lock` で拒否される（2026-10-18 確認）。GitLab は未確認。
+- 未コミットの変更があると、自分のロックでも Git LFS が解除を拒む（`Cannot unlock file with uncommitted changes`）。
+
 ## 言語・書き方
 
 - **利用者への返答・説明・コードレビューの指摘は日本語で書く。** 英語で書いたら日本語に直す。
