@@ -57,7 +57,7 @@ repo-tweaks/
 - 通知：CLI は lock / unlock の結果から `lock` / `unlock` / `force_unlock` のイベント（`files`）を作ってサーバーへ送る。送れなくても終了コードは変えない（最初の失敗で残りは送らない）。サーバー未設定なら送らずに1行知らせ（`repo-tweaks.notify false` で消える）、トークンだけ無いときは警告する。`--no-notify` / `repo-tweaks.notify false` で止める。`user` は LFS サーバーの名前（`git lfs lock --json` の owner、または自分のロックの owner）を優先し、無ければ git の user.name。
 - サーバーはイベントをメモリに最大 1000 件、1 件あたりパスは先頭 20 件だけ持つ（全体の数は `file_count`）。mem_limit 128m に収めるため。
 - Discord の文面は server/repo_tweaks_server/messages.py（1操作1メッセージ、.meta は持ち主が同じときだけまとめる、1800 文字の予算で行を足し残りは「ほか N 件」）。利用者が決める文字列（パス・名前）は書式として解釈させず、送信時は `allowed_mentions: {"parse": []}` でメンションを止める。投稿は応答のあと（BackgroundTask）。
-- 照合（server/repo_tweaks_server/reconcile.py）：前回のロック一覧と比べ、増えた・消えたもののうち通知済みでないものを流す。通知済みは「remote + ロックの ID」で state.json に残し、CLI のイベント（`files` の `id`）も記録する。初回は数えるだけ。失敗は「失敗し始め」と「直った」ときだけ通知（リポジトリごとにどんな例外も失敗として記録し、ほかは続ける）。通知済みの ID は、照合で見ていないものは 7 日で忘れる。取られて 2 分以内のロックは `pending` として次の照合まで持ち越す（CLI の通知との行き違いを防ぐ）。remote は小文字にそろえる。照合中に登録が消えたら結果を保存しない。滞留の警告は照合が失敗中のリポジトリを除く。
+- 照合（server/repo_tweaks_server/reconcile.py）：前回のロック一覧と比べ、増えた・消えたもののうち通知済みでないものを流す。通知済みは「remote + ロックの ID」で state.json に残し、CLI のイベント（`files` の `id`）も記録する。初回は数えるだけ。失敗は「失敗し始め」と「直った」ときだけ通知（リポジトリごとにどんな例外も失敗として記録し、ほかは続ける）。通知済みの ID は、照合で見ていないものは 7 日で忘れる。取られて 2 分以内のロックは `pending` として持ち越し、2 分後にもう一度照合する（CLI の通知との行き違いを防ぐ。いつもの間隔は待たない）。remote は小文字にそろえる。照合中に登録が消えたら結果を保存しない。滞留の警告は照合が失敗中のリポジトリを除く。
 - GitHub の LFS ロック API（server/repo_tweaks_server/lfs_api.py）：`https://github.com/<o>/<r>.git/info/lfs/locks`、Basic 認証。送り先は github.com だけ、リダイレクトとプロキシは使わない（トークンをよそへ送らない）。
 - `notify` は hook の中で動くので、git の起動回数を増やさない（`git config --get-regexp` と `git rev-parse` を1回ずつ）。
 

@@ -247,10 +247,14 @@ class ReconcilerTest(unittest.TestCase):
         self.locks = [lock("1", "a.psd", at="2026-10-17T23:59:30Z")]  # 30 seconds before T0
         self.run_all()
         self.assertEqual(self.notifier.sent, [])  # held over
-        self.clock.now = T0 + timedelta(minutes=10)
+        self.assertEqual(self.reconciler.snapshot()[REMOTE]["pending"], ["1"])
+        # Checked again soon, not after the regular interval
+        self.assertEqual(self.reconciler.next_run(), T0 + timedelta(minutes=2))
+        self.clock.now = T0 + timedelta(minutes=2)
         self.run_all()
         self.assertEqual(len(self.notifier.sent), 1)
         self.assertIn("a.psd", self.notifier.sent[0])
+        self.assertEqual(self.reconciler.next_run(), T0 + timedelta(minutes=62))
 
     def test_held_over_lock_is_dropped_when_the_cli_reports_it(self):
         self.run_all()

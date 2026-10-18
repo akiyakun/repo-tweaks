@@ -29,7 +29,7 @@
 
 <section class="card">
   <h2>ロックの照合（GitHub）</h2>
-  <p class="muted">登録したリポジトリのロック一覧を {{ reconcile.interval_minutes }} 分ごとに GitHub から取り、CLI を通らずに取られた・外れたロック（Fork や <code>git lfs lock</code> など）を Discord に通知します。登録した直後の 1 回目は、今あるロックを数えるだけで通知しません。</p>
+  <p class="muted">登録したリポジトリのロック一覧を {{ reconcile.interval_minutes }} 分ごとに GitHub から取り、CLI を通らずに取られた・外れたロック（Fork や <code>git lfs lock</code> など）を Discord に通知します。登録した直後の 1 回目は、今あるロックを数えるだけで通知しません。取られて 2 分以内のロックは、CLI からの通知と重ならないよう「確認待ち」にして、約 2 分後にもう一度確かめてから通知します。</p>
   {% if repos %}
   <div class="table-wrap">
     <table>
@@ -39,7 +39,7 @@
         <tr>
           <td class="wrap">{{ r.remote }}</td><td>{{ r.username }}</td><td><code>{{ r.token }}</code></td>
           <td>{{ r.state.last_checked | jst if r.state.last_checked else "まだ" }}</td>
-          <td>{{ r.state.locks | length if r.state.initialized else "—" }}</td>
+          <td>{% if r.state.initialized %}{{ r.state.locks | length }}{% if r.state.pending %}（確認待ち {{ r.state.pending | length }}）{% endif %}{% else %}—{% endif %}</td>
           <td class="wrap">{% if r.state.last_error %}<span class="error-text">{{ r.state.last_error }}</span>{% elif r.state.initialized %}OK{% else %}—{% endif %}</td>
           <td><form method="post" action="/repos/delete"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="id" value="{{ r.id }}"><button type="submit" class="danger compact">削除</button></form></td>
         </tr>

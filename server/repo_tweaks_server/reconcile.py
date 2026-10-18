@@ -134,6 +134,9 @@ class Reconciler:
         self._wake = None
         self.last_run = None
         self.last_manual = None
+        # Set when a round held fresh locks over: check again once they are old enough,
+        # instead of waiting for the regular interval
+        self._recheck_at = None
 
     # --- CLI events ---
 
@@ -159,6 +162,7 @@ class Reconciler:
         async with self._running:
             repos = self.store.load()["repos"]
             self.last_run = self.clock()
+            self._recheck_at = None
             results = []
             for repo in repos:
                 results.append(await self._run_repo(repo))
@@ -209,6 +213,8 @@ class Reconciler:
                 seen = _parse(bucket[lid])
                 if lid not in current and (seen is None or now - seen > NOTIFIED_KEEP):
                     del bucket[lid]
+        if pending:
+            self._recheck_at = now + FRESH_LOCK_GRACE
         entry.update({"initialized": True, "locks": current, "pending": pending,
                       "last_checked": _iso(now), "last_error": None})
         self.state.save(data)
@@ -284,8 +290,11 @@ class Reconciler:
     # --- schedule ---
 
     def next_run(self):
+        if self.last_run is None:
+            return None
         minutes = int(self.store.load()["reconcile"]["interval_minutes"])
-        return None if self.last_run is None else self.last_run + timedelta(minutes=minutes)
+        regular = self.last_run + timedelta(minutes=minutes)
+        return min(regular, self._recheck_at) if self._recheck_at else regular
 
     def run_soon(self):
         """Check on the next tick (after a repository was added); not rate-limited"""
