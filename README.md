@@ -255,8 +255,13 @@ repo-tweaks: 1 件は処理できませんでした
 
 管理画面の「ロックの照合」で、リポジトリの URL、GitHub のユーザー名、トークンを登録します。トークンはロックの一覧を**読むだけ**に使います。
 
-- GitHub の「Settings → Developer settings → Personal access tokens」で作ります。
-- どの権限で足りるかは、まだ実機で確かめていません（読み取りの権限で足りるはずです）。登録したら「今すぐ照合」を押し、「状態」が `OK` になるか確かめてください。
+- **Fine-grained トークン**をおすすめします。GitHub の「Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token」で、次のように作ります。
+  - Repository access：**Only select repositories** で、照合するリポジトリだけを選ぶ
+  - Permissions → Repository permissions：**Contents を Read-only**（Metadata の Read-only は自動で付きます）。これで足ります（実機で確認済み）
+  - Expiration（期限）は好みで。期限が切れると照合が失敗し、Discord に 1 回知らせが届くので、そのときに作り直して登録し直します
+- classic トークンでも動きますが、スコープ（`repo` など）がアカウントのすべてのリポジトリにかかるので、おすすめしません。
+- リポジトリが組織（Organization）のものなら、Resource owner にその組織を選びます（組織の設定で Fine-grained トークンが許可されている必要があります）。
+- 登録したら「今すぐ照合」を押し、「状態」が `OK` になるか確かめてください。
 - トークンはサーバーの設定ファイル（ボリュームの `admin.json`）に保存し、画面には最後の 4 文字だけを出します。登録を削除すると、トークンも消えます。
 
 ## サーバーの API
