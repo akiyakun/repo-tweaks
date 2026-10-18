@@ -8,7 +8,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
 - 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）、Step 5（サーバーによる定期的な照合と滞留の警告。GitHub のみ）。
 - 次の候補は、`status`（`.gitattributes` の lockable と突き合わせ）、Unity 拡張（HANDOFF のフェーズ 2）、GitLab への照合の対応。通知先は Discord（Slack は後回し）。
-- Step 5 は未確認：GitHub のトークンにどの権限が要るか、NAS から GitHub の LFS ロック API に届くか（利用者が確かめる）。
+- Step 5 は未確認：GitHub のトークンに最低限どの権限が要るか（利用者が確かめる）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
 ## 実機で確かめたこと（GitHub、Mac / Windows）
@@ -21,6 +21,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 - GitHub は `git lfs lock` の応答に owner を入れない。通知の名前は、ロックの一覧の ours の owner から引き直す（通知するときだけ `git lfs locks` を1回多く呼ぶ）。
 - 未コミットの変更があると、自分のロックでも Git LFS が解除を拒む（`Cannot unlock file with uncommitted changes`）。
 - サーバー 0.2.0 は NAS の Docker で動き、Mac のブラウザから管理画面に入れる。Discord の Webhook へのテスト送信、CLI の `ping` も成功（2026-10-18 確認）。
+- サーバー 0.4.1 は NAS から GitHub の LFS ロック API に届き、照合が動く。Fork で取ったロックは「確認待ち」になり、約 2 分後に「ロックを見つけました」が Discord に届く（2026-10-18 確認）。
 
 ## 言語・書き方
 
