@@ -1,0 +1,23 @@
+#!/bin/sh
+# post-commit hook for repo-tweaks. Never blocks or fails the commit.
+#
+# It replaces the hook `git lfs install` writes, so it also runs Git LFS's own step
+# (re-applying read-only to lockable files). Keep that line when editing.
+
+# --- Git LFS (copied from the hook git-lfs 3.7 installs) ---
+command -v git-lfs >/dev/null 2>&1 || { printf >&2 "\n%s\n\n" "This repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'post-commit' file in the hooks directory (set by 'core.hookspath'; usually '.git/hooks')."; exit 2; }
+git lfs post-commit "$@"
+
+# --- repo-tweaks ---
+# GUI clients (Fork etc.) may not have ~/.cargo/bin on PATH, so fall back to it (.exe on Windows).
+RT="$(command -v repo-tweaks 2>/dev/null)"
+if [ -z "$RT" ]; then
+  for c in "$HOME/.cargo/bin/repo-tweaks" "$HOME/.cargo/bin/repo-tweaks.exe"; do
+    if [ -x "$c" ]; then RT="$c"; break; fi
+  done
+fi
+if [ -z "$RT" ]; then
+  echo "repo-tweaks: コマンドが見つからないため、通知を送りませんでした" >&2
+  exit 0
+fi
+"$RT" notify --event post-commit || true

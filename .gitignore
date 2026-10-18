@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Per-machine Cargo settings (e.g. target-dir on local disk)
+/.cargo/config.toml
+
+# Personal environment notes for Claude Code
+CLAUDE.local.md

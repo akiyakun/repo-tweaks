@@ -1,0 +1,6 @@
+# Allowlist: exclude everything, then add back only what the image needs
+**
+!requirements.txt
+!server.py
+!repo_tweaks_server/
+!repo_tweaks_server/*.py

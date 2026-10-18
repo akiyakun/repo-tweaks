@@ -1,0 +1,21 @@
+services:
+  repo-tweaks:
+    build: .
+    image: repo-tweaks-server:0.1.0
+    container_name: repo-tweaks
+    restart: unless-stopped
+    ports:
+      - "${REPO_TWEAKS_BIND_IP:-127.0.0.1}:${REPO_TWEAKS_PORT:-8105}:8000"
+    environment:
+      TZ: Asia/Tokyo
+      REPO_TWEAKS_TOKEN: "${REPO_TWEAKS_TOKEN:?Set REPO_TWEAKS_TOKEN in .env}"
+      # Host names clients use to reach the server (DNS rebinding protection). Never use *.
+      REPO_TWEAKS_ALLOWED_HOSTS: "${REPO_TWEAKS_ALLOWED_HOSTS:-localhost,127.0.0.1}"
+      REPO_TWEAKS_MAX_EVENTS: "${REPO_TWEAKS_MAX_EVENTS:-100}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 128m
