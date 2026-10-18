@@ -2,8 +2,11 @@
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 MIN_TOKEN_LENGTH = 32
+# Fixed to server/data/dev (git-ignored) wherever the server is started from
+DEFAULT_DATA_DIR = str(Path(__file__).resolve().parent.parent / "data" / "dev")
 
 
 @dataclass(frozen=True)
@@ -11,6 +14,8 @@ class Settings:
     token: str
     allowed_hosts: tuple
     max_events: int = 100
+    # Where the admin screen keeps admin.json (password hash, webhook). /data in the container.
+    data_dir: str = DEFAULT_DATA_DIR
 
     @classmethod
     def from_env(cls, env=None):
@@ -28,4 +33,5 @@ class Settings:
             max_events = 0
         if not 1 <= max_events <= 10000:
             raise ValueError("REPO_TWEAKS_MAX_EVENTS は 1〜10000 の整数にしてください")
-        return cls(token=token, allowed_hosts=hosts, max_events=max_events)
+        data_dir = env.get("REPO_TWEAKS_DATA_DIR", "").strip() or DEFAULT_DATA_DIR
+        return cls(token=token, allowed_hosts=hosts, max_events=max_events, data_dir=data_dir)

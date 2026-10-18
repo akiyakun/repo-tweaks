@@ -15,7 +15,7 @@ pub struct Config {
 impl Config {
     pub fn load(git: &GitConfig) -> Result<Self, String> {
         let server = lookup("REPO_TWEAKS_SERVER", git, KEY_SERVER).ok_or(
-            "サーバーの場所が未設定です。例: git config --global repo-tweaks.server http://localhost:8105",
+            "サーバーの場所が未設定です。例: git config --global repo-tweaks.server http://localhost:8107",
         )?;
         let token = lookup("REPO_TWEAKS_TOKEN", git, KEY_TOKEN).ok_or(
             "トークンが未設定です。例: git config --global repo-tweaks.token <サーバーの .env と同じ値>",
@@ -42,7 +42,7 @@ mod tests {
 
     #[test]
     fn trailing_slash_removed() {
-        assert_eq!(normalize_server(" http://localhost:8105/ "), "http://localhost:8105");
-        assert_eq!(normalize_server("http://localhost:8105"), "http://localhost:8105");
+        assert_eq!(normalize_server(" http://localhost:8107/ "), "http://localhost:8107");
+        assert_eq!(normalize_server("http://localhost:8107"), "http://localhost:8107");
     }
 }

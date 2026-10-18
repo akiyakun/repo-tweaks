@@ -3,7 +3,9 @@
 実行: .venv/bin/python -m unittest discover -s tests -v
 """
 
+import atexit
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,9 +20,22 @@ TOKEN = "t" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
-def make_client(max_events=100):
-    settings = Settings(token=TOKEN, allowed_hosts=("testserver",), max_events=max_events)
-    return TestClient(create_app(settings))
+# Data folders for test clients; kept referenced and removed when the test run ends
+_TEMP_DIRS = []
+atexit.register(lambda: [t.cleanup() for t in _TEMP_DIRS])
+
+
+def make_client(max_events=100, notifier=None, data_dir=None):
+    """A client with its own data folder, or with `data_dir` to share one (like a restarted server)."""
+    tmp = None
+    if not data_dir:
+        tmp = tempfile.TemporaryDirectory()
+        _TEMP_DIRS.append(tmp)
+    settings = Settings(token=TOKEN, allowed_hosts=("testserver",), max_events=max_events,
+                        data_dir=data_dir or tmp.name)
+    client = TestClient(create_app(settings, notifier=notifier), follow_redirects=False)
+    client.tmp = tmp
+    return client
 
 
 class SettingsTest(unittest.TestCase):
@@ -43,6 +58,9 @@ class SettingsTest(unittest.TestCase):
         s = Settings.from_env({"REPO_TWEAKS_TOKEN": TOKEN})
         self.assertEqual(s.allowed_hosts, ("localhost", "127.0.0.1"))
         self.assertEqual(s.max_events, 100)
+        # Always server/data/dev (git-ignored), not relative to where the server was started
+        self.assertEqual(Path(s.data_dir), Path(__file__).resolve().parent.parent / "data" / "dev")
+        self.assertEqual(Settings.from_env({"REPO_TWEAKS_TOKEN": TOKEN, "REPO_TWEAKS_DATA_DIR": "/data"}).data_dir, "/data")
 
 
 class AppTest(unittest.TestCase):

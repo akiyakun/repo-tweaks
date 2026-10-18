@@ -1,17 +1,20 @@
 services:
   repo-tweaks:
     build: .
-    image: repo-tweaks-server:0.1.0
+    image: repo-tweaks-server:0.2.1
     container_name: repo-tweaks
     restart: unless-stopped
     ports:
-      - "${REPO_TWEAKS_BIND_IP:-127.0.0.1}:${REPO_TWEAKS_PORT:-8105}:8000"
+      - "${REPO_TWEAKS_BIND_IP:-127.0.0.1}:${REPO_TWEAKS_PORT:-8107}:8000"
     environment:
       TZ: Asia/Tokyo
       REPO_TWEAKS_TOKEN: "${REPO_TWEAKS_TOKEN:?Set REPO_TWEAKS_TOKEN in .env}"
-      # Host names clients use to reach the server (DNS rebinding protection). Never use *.
+      # Host names clients and browsers use to reach the server (DNS rebinding protection). Never use *.
       REPO_TWEAKS_ALLOWED_HOSTS: "${REPO_TWEAKS_ALLOWED_HOSTS:-localhost,127.0.0.1}"
       REPO_TWEAKS_MAX_EVENTS: "${REPO_TWEAKS_MAX_EVENTS:-100}"
+    volumes:
+      # Admin settings (password hash, Discord webhook URL)
+      - admin-data:/data
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -19,3 +22,6 @@ services:
     security_opt: ["no-new-privileges:true"]
     pids_limit: 64
     mem_limit: 128m
+volumes:
+  admin-data:
+    name: repo-tweaks-data

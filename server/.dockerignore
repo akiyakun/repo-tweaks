@@ -4,3 +4,7 @@
 !server.py
 !repo_tweaks_server/
 !repo_tweaks_server/*.py
+!repo_tweaks_server/templates/
+!repo_tweaks_server/templates/*.html
+!repo_tweaks_server/static/
+!repo_tweaks_server/static/*.css

@@ -4,9 +4,10 @@
 - GET  /api/ping    トークンの確認を含めた疎通確認（CLI の `repo-tweaks ping`）
 - POST /api/events  CLI・git hook からの通知を受け取る
 - GET  /api/events  受け取った通知の直近の一覧（メモリにだけ置く。再起動で消える）
+- /、/login など    管理画面（admin.py）
 
 安全のための決まり:
-- /api/ は Bearer トークン（REPO_TWEAKS_TOKEN）が必須
+- /api/ は Bearer トークン（REPO_TWEAKS_TOKEN）が必須。管理画面はパスワードでログインする
 - 受け付けるホスト名を REPO_TWEAKS_ALLOWED_HOSTS に限る（DNS リバインディング対策）
 - 本文は MAX_BODY_BYTES まで
 """
@@ -17,6 +18,7 @@ import logging
 import unicodedata
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -25,8 +27,11 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from . import __version__
+from .admin import SecurityHeaders, admin_routes
 from .config import Settings
+from .notify import Notifier
 from .security import same_token
+from .settings import SettingsStore
 
 log = logging.getLogger("repo_tweaks")
 
@@ -85,8 +90,10 @@ def _error(status, message):
     return JSONResponse({"ok": False, "error": message}, status_code=status)
 
 
-def create_app(settings=None):
+def create_app(settings=None, notifier=None):
     settings = settings or Settings.from_env()
+    store = SettingsStore(Path(settings.data_dir) / "admin.json")
+    notifier = notifier or Notifier(store)
     events = deque(maxlen=settings.max_events)
     ids = itertools.count(1)
 
@@ -133,12 +140,20 @@ def create_app(settings=None):
     async def list_events(request):
         return JSONResponse({"ok": True, "events": list(reversed(events))})
 
-    return Starlette(
+    admin, guard = admin_routes(store, notifier, lambda: list(reversed(events)))
+    app = Starlette(
         routes=[
             Route("/health", health),
             Route("/api/ping", ping),
             Route("/api/events", post_event, methods=["POST"]),
             Route("/api/events", list_events, methods=["GET"]),
+            *admin,
         ],
-        middleware=[Middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts))],
+        middleware=[
+            Middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts)),
+            Middleware(SecurityHeaders),
+        ],
     )
+    app.state.store = store
+    app.state.guard = guard
+    return app

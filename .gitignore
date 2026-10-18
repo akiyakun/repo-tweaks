@@ -224,3 +224,6 @@ __marimo__/
 
 # Personal environment notes for Claude Code
 CLAUDE.local.md
+
+# Admin settings written when running the server on the Mac (password hash, webhook URL)
+server/data/

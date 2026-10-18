@@ -2,7 +2,7 @@
 
 
 Git LFS のロックを土台にした、ファイルロック管理ツール（作成中）。
-いまは **Step 2: ロックの取得・解除（`repo-tweaks lock` / `unlock`）** まで出来ています。
+いまは **Step 3: サーバーの管理画面（Discord の通知先の登録）と NAS での起動** まで出来ています。
 
 Step 0 で作った、CLI とサーバーの疎通の流れ：
 
@@ -18,7 +18,7 @@ git commit
 |---|---|
 | `core/` | Rust のライブラリ。git / git lfs の呼び出し、ロックの解釈と古さの判定、ロック・解除（CLI・GUI・Unity で共通に使う） |
 | `cli/` | Rust の CLI（コマンド名 `repo-tweaks`） |
-| `server/` | Python（Starlette）のサーバー。Docker で動かす |
+| `server/` | Python（Starlette）のサーバー。CLI からの通知の受け口と、管理画面。Docker で動かす |
 | `hooks/` | git hook のサンプル |
 | `unity/` | Unity Editor 拡張（未着手） |
 
@@ -32,13 +32,71 @@ docker compose up -d --build
 docker compose logs -f        # 受け取った通知がここに出る
 ```
 
-ホスト側のポートは `8105` です（`.env` の `REPO_TWEAKS_PORT`）。
+ホスト側のポートは `8107` です（`.env` の `REPO_TWEAKS_PORT`）。
+ブラウザで `http://localhost:8107/` を開くと管理画面です（初期パスワードは `admin`）。
+
+### NAS で動かす
+
+NAS の、このリポジトリのフォルダで実行します（SSH で入るか、UGOS の Docker の画面からプロジェクトとして）。
+
+```bash
+cd server
+cp .env.example .env
+```
+
+`.env` を次のように書き換えます（IP は NAS の LAN の IP。例の `192.0.2.10` は架空の値です）。
+
+```text
+REPO_TWEAKS_TOKEN=<openssl rand -hex 32 などで作った値>
+REPO_TWEAKS_BIND_IP=192.0.2.10
+REPO_TWEAKS_ALLOWED_HOSTS=localhost,127.0.0.1,192.0.2.10
+```
+
+```bash
+docker compose up -d --build
+```
+
+起動したら、ブラウザで `http://<NAS の IP>:8107/` を開き、次の順に設定します。
+
+1. 初期パスワード `admin` でログインし、「パスワードの変更」で変える（変えるまで、画面の上部に警告が出続けます）
+2. Discord で Webhook を作る（チャンネルの設定 → 連携サービス → ウェブフック → 新しいウェブフック → 「ウェブフック URL をコピー」）
+3. 「通知（Discord）」に貼って保存し、「テスト送信」で Discord に届くか確かめる
+
+CLI の送り先も NAS に変えます。
+
+```bash
+git config --global repo-tweaks.server http://<NAS の IP>:8107
+git config --global repo-tweaks.token <NAS の .env と同じトークン>
+repo-tweaks ping
+```
+
+## 管理画面
+
+| 欄 | 内容 |
+|---|---|
+| 通知（Discord） | Webhook URL の保存（画面では伏せ字）・削除・テスト送信。今はログインのロックだけを通知します（ロックの取得・解除の通知は次の Step） |
+| 直近の受信 | CLI・git hook から受け取った通知の、新しい順に 20 件（メモリだけ。再起動で消えます） |
+| パスワードの変更 | 8 文字以上。初期パスワード（admin）は使えません。変えると、ほかのブラウザのログインは切れます |
+
+- 作りは cloud-drive-sync の管理画面と同じです。パスワードは scrypt のハッシュだけを保存します。**3 分以内に 3 回まちがえると 15 分ロック**し、Discord に通知します。
+- ログインの状態はサーバーのメモリだけに持ちます（コンテナを再起動するとログアウトします。12 時間で切れます）。
+- フォームには CSRF 対策の合言葉と Origin の確認、すべての応答に安全のためのヘッダー（CSP、`X-Frame-Options: DENY` など）を付けています。
+- 設定（`admin.json`：パスワードのハッシュ・Webhook URL）は、Docker の名前付きボリューム `repo-tweaks-data` に保存します。コンテナを作り直しても残ります。
+- 通信は暗号化しません（HTTP）。家・社内の LAN だけで使う前提です。HTTPS にしたいときは NAS のリバースプロキシなどを前に置けます（フォームの確認はホスト名とポートで行うので、プロキシが `Host` ヘッダーをそのまま渡す設定にしてください）。
+- 管理画面のフォームは 8 KB まで受け付けます（それより大きい送信は、中身を読む前に断ります）。
+- **パスワードを忘れたら**：設定を消して再起動すると、初期パスワード `admin` に戻ります（Webhook URL も消えるので、登録し直してください）。
+
+  ```bash
+  docker compose stop
+  docker run --rm -v repo-tweaks-data:/data busybox rm /data/admin.json
+  docker compose start
+  ```
 
 ## 2. CLI を入れて設定する
 
 ```bash
 cargo install --path cli      # ~/.cargo/bin/repo-tweaks に入る
-git config --global repo-tweaks.server http://localhost:8105
+git config --global repo-tweaks.server http://localhost:8107
 git config --global repo-tweaks.token <サーバーの .env と同じトークン>
 repo-tweaks ping
 ```

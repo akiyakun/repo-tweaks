@@ -2,7 +2,7 @@
 
 使い方:
     python server.py                 # 0.0.0.0:8000 で待ち受ける（コンテナの中）
-    python server.py --port 8105     # Mac で直接試すとき（REPO_TWEAKS_TOKEN が必要）
+    python server.py --port 8107     # Mac で直接試すとき（REPO_TWEAKS_TOKEN が必要）
 """
 
 import argparse
