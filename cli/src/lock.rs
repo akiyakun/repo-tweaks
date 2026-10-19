@@ -172,31 +172,11 @@ fn send_events(config: &GitConfig, events: Vec<(&'static str, Vec<EventFile>)>, 
     }
 }
 
-fn describe(outcome: &Outcome, now: OffsetDateTime) -> (&'static str, Option<String>) {
-    let since = |l: &Lock| format_jst(l.locked_at, now);
-    match outcome {
-        Outcome::Locked { .. } => ("ロックしました", None),
-        Outcome::AlreadyOurs => ("ロック済み", Some("自分がロック中".into())),
-        Outcome::HeldByOther(l) => ("できません", Some(format!("{} さんが {} からロック中", l.owner, since(l)))),
-        Outcome::NoSuchFile => ("できません", Some("ファイルがありません".into())),
-        Outcome::IsDirectory => ("できません", Some("フォルダはロックできません。ファイルを指定してください".into())),
-        Outcome::SkippedPair => ("しませんでした", Some("元のファイルを処理できなかったため".into())),
-        Outcome::Unlocked => ("解除しました", None),
-        Outcome::ForceUnlocked(l) => ("強制解除しました", Some(format!("{} さんのロック", l.owner))),
-        Outcome::NotLocked => ("ロックなし", None),
-        Outcome::OthersLock(l) => (
-            "できません",
-            Some(format!("{} さんが {} からロック中。強制解除するには --force", l.owner, since(l))),
-        ),
-        Outcome::Failed(message) => ("できません", Some(message.clone())),
-    }
-}
-
 fn render(results: &[(Target, Outcome)], now: OffsetDateTime) -> String {
     let rows: Vec<(&str, String, Option<String>)> = results
         .iter()
         .map(|(target, outcome)| {
-            let (label, detail) = describe(outcome, now);
+            let (label, detail) = outcome.describe(now);
             let path = if target.pair_of.is_some() { format!("{}（自動で追加）", target.path) } else { target.path.clone() };
             (label, path, detail)
         })
@@ -297,7 +277,7 @@ mod tests {
 
     #[test]
     fn unlock_without_force_points_to_force() {
-        let (label, detail) = describe(&Outcome::OthersLock(bob()), NOW);
+        let (label, detail) = Outcome::OthersLock(bob()).describe(NOW);
         assert_eq!(label, "できません");
         assert!(detail.unwrap().contains("--force"));
     }

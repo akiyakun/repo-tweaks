@@ -1,6 +1,7 @@
 //! Screen data for the lock list, formatted the same way as `repo-tweaks list`.
 
 use repo_tweaks_core::locks::{Lock, LockList, format_age, format_jst, stale_warning};
+use repo_tweaks_core::ops::{Outcome, State, Target};
 use serde::Serialize;
 use time::OffsetDateTime;
 
@@ -59,6 +60,54 @@ impl LockReport {
     }
 }
 
+/// The result of locking or unlocking one file, worded like the CLI's output.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OpResult {
+    path: String,
+    /// The Unity `.meta` partner added automatically
+    auto_added: bool,
+    label: &'static str,
+    detail: Option<String>,
+    ok: bool,
+    /// Our own lock that git lfs refused to remove (uncommitted changes, deleted file):
+    /// a forced unlock (by lock ID) would go through
+    can_force: bool,
+}
+
+pub fn op_results(results: &[(Target, Outcome)], now: OffsetDateTime) -> Vec<OpResult> {
+    results
+        .iter()
+        .map(|(target, outcome)| {
+            let (label, detail) = outcome.describe(now);
+            OpResult {
+                path: target.path.clone(),
+                auto_added: target.pair_of.is_some(),
+                label,
+                detail,
+                ok: !outcome.is_failure(),
+                can_force: matches!((&target.state, outcome), (State::Ours(_), Outcome::Failed(_))),
+            }
+        })
+        .collect()
+}
+
+/// Someone else's lock that a forced unlock would remove, for the confirmation dialog.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OthersLock {
+    id: String,
+    path: String,
+    owner: String,
+    locked_at: String,
+}
+
+impl OthersLock {
+    pub fn new(lock: &Lock, now: OffsetDateTime) -> Self {
+        OthersLock { id: lock.id.clone(), path: lock.path.clone(), owner: lock.owner.clone(), locked_at: format_jst(lock.locked_at, now) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +135,33 @@ mod tests {
         assert_eq!(json["theirs"][0]["owner"], "bob");
         assert_eq!(json["theirs"][0]["age"], "4日17時間");
         assert_eq!(json["theirs"][0]["stale"], true);
+    }
+
+    #[test]
+    fn own_lock_refused_by_git_lfs_can_be_forced() {
+        let locks = parse_verify_json(
+            r#"{"ours":[{"id":"1","path":"a.unity","owner":{"name":"alice"},"locked_at":"2026-10-17T16:30:00Z"}],"theirs":[]}"#,
+        )
+        .unwrap();
+        let ours = State::Ours(locks.ours[0].clone());
+        let target = |path: &str, pair_of: Option<&str>, state: State| Target {
+            path: path.into(),
+            pair_of: pair_of.map(str::to_string),
+            state,
+        };
+        let results = [
+            (target("a.unity", None, ours.clone()), Outcome::Failed("未コミットの変更があるため解除できません。".into())),
+            (target("a.unity.meta", Some("a.unity"), State::Free), Outcome::SkippedPair),
+            (target("b.psd", None, State::Free), Outcome::Failed("x".into())),
+        ];
+        let json = serde_json::to_value(op_results(&results, datetime!(2026-10-18 18:30 UTC))).unwrap();
+        assert_eq!(json[0]["label"], "できません");
+        assert_eq!(json[0]["ok"], false);
+        assert_eq!(json[0]["canForce"], true);
+        assert_eq!(json[1]["autoAdded"], true);
+        assert_eq!(json[1]["label"], "しませんでした");
+        assert_eq!(json[1]["canForce"], false);
+        // Not our lock: nothing to force
+        assert_eq!(json[2]["canForce"], false);
     }
 }

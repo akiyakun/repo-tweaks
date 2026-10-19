@@ -86,7 +86,7 @@ pub(crate) fn first_line(stderr: &str) -> &str {
 pub(crate) fn explain(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     let hint = if lower.contains("uncommitted changes") {
-        "未コミットの変更があるため解除できません。コミットしてから解除するか、--force を付けてください。"
+        "未コミットの変更があるため解除できません。コミットしてから解除するか、強制解除（--force）してください。"
     } else if lower.contains("lock exists") || lower.contains("already locked") || lower.contains("already created") {
         "ほかの人がすでにロックしています。repo-tweaks list で確かめてください。"
     } else if lower.contains("could not read username")

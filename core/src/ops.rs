@@ -12,10 +12,11 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 use serde_json::Value;
+use time::OffsetDateTime;
 
 use crate::git::{self, GitConfig};
 use crate::lfs;
-use crate::locks::{Lock, LockList};
+use crate::locks::{Lock, LockList, format_jst};
 use crate::paths::RepoContext;
 
 const META: &str = ".meta";
@@ -67,6 +68,27 @@ impl Outcome {
             Outcome::HeldByOther(_) | Outcome::NoSuchFile | Outcome::IsDirectory | Outcome::OthersLock(_) | Outcome::Failed(_)
         )
     }
+
+    /// A short label and an optional detail, as the CLI prints them (the GUI shows the same words).
+    pub fn describe(&self, now: OffsetDateTime) -> (&'static str, Option<String>) {
+        let since = |l: &Lock| format_jst(l.locked_at, now);
+        match self {
+            Outcome::Locked { .. } => ("ロックしました", None),
+            Outcome::AlreadyOurs => ("ロック済み", Some("自分がロック中".into())),
+            Outcome::HeldByOther(l) => ("できません", Some(format!("{} さんが {} からロック中", l.owner, since(l)))),
+            Outcome::NoSuchFile => ("できません", Some("ファイルがありません".into())),
+            Outcome::IsDirectory => ("できません", Some("フォルダはロックできません。ファイルを指定してください".into())),
+            Outcome::SkippedPair => ("しませんでした", Some("元のファイルを処理できなかったため".into())),
+            Outcome::Unlocked => ("解除しました", None),
+            Outcome::ForceUnlocked(l) => ("強制解除しました", Some(format!("{} さんのロック", l.owner))),
+            Outcome::NotLocked => ("ロックなし", None),
+            Outcome::OthersLock(l) => (
+                "できません",
+                Some(format!("{} さんが {} からロック中。強制解除するには --force", l.owner, since(l))),
+            ),
+            Outcome::Failed(message) => ("できません", Some(message.clone())),
+        }
+    }
 }
 
 pub struct Plan {
@@ -76,20 +98,24 @@ pub struct Plan {
 }
 
 /// Check the repository and remote, resolve paths, and fetch the current locks once.
-fn prepare(config: &GitConfig, inputs: &[String]) -> Result<(RepoContext, Vec<String>, LockList), String> {
+fn prepare(ctx: &RepoContext, config: &GitConfig, inputs: &[String]) -> Result<(Vec<String>, LockList), String> {
     if inputs.is_empty() {
         return Err("ファイルを指定してください".into());
     }
-    let ctx = RepoContext::current()?;
     lfs::require_remote(config)?;
     let paths = inputs.iter().map(|p| ctx.repo_path(p)).collect::<Result<Vec<_>, _>>()?;
     let paths = ctx.tracked_case(paths);
-    let locks = lfs::query_locks()?;
-    Ok((ctx, paths, locks))
+    let locks = lfs::fetch_locks_in(ctx, config)?;
+    Ok((paths, locks))
 }
 
 pub fn plan_lock(config: &GitConfig, inputs: &[String], with_meta: bool) -> Result<Plan, String> {
-    let (ctx, paths, locks) = prepare(config, inputs)?;
+    plan_lock_in(RepoContext::current()?, config, inputs, with_meta)
+}
+
+/// Like `plan_lock`, for a repository the GUI opened. Relative inputs are relative to `ctx`'s folder.
+pub fn plan_lock_in(ctx: RepoContext, config: &GitConfig, inputs: &[String], with_meta: bool) -> Result<Plan, String> {
+    let (paths, locks) = prepare(&ctx, config, inputs)?;
     // Pair with the .meta (or asset) only when that file exists
     let targets = collect(paths, with_meta, |p| ctx.disk_path(p).is_file());
     Ok(Plan { targets: with_state(targets, &locks), ctx, force: false })
@@ -97,7 +123,18 @@ pub fn plan_lock(config: &GitConfig, inputs: &[String], with_meta: bool) -> Resu
 
 /// `force`: also take other people's locks (the caller confirms first, using `others_locks`).
 pub fn plan_unlock(config: &GitConfig, inputs: &[String], with_meta: bool, force: bool) -> Result<Plan, String> {
-    let (ctx, paths, locks) = prepare(config, inputs)?;
+    plan_unlock_in(RepoContext::current()?, config, inputs, with_meta, force)
+}
+
+/// Like `plan_unlock`, for a repository the GUI opened.
+pub fn plan_unlock_in(
+    ctx: RepoContext,
+    config: &GitConfig,
+    inputs: &[String],
+    with_meta: bool,
+    force: bool,
+) -> Result<Plan, String> {
+    let (paths, locks) = prepare(&ctx, config, inputs)?;
     // Pair only with a partner we may actually unlock: our own, or anyone's under --force
     let targets = collect(paths, with_meta, |p| match find(&locks, p) {
         Some(State::Ours(_)) => true,
@@ -242,7 +279,7 @@ impl Plan {
             State::Theirs(lock) if !force => Step::Done(Outcome::OthersLock(lock.clone())),
             // Without --force Git LFS asks `git status` about the file and fails on a missing one
             State::Ours(_) if !force && !ctx.disk_path(&t.path).exists() => Step::Done(Outcome::Failed(
-                "手元にファイルが無いため解除できません（削除・移動したファイル）。--force を付けると解除できます".into(),
+                "手元にファイルが無いため解除できません（削除・移動したファイル）。強制解除（--force）なら解除できます".into(),
             )),
             _ => Step::Run,
         };

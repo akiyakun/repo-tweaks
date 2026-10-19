@@ -1,9 +1,24 @@
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { AlertTriangle, FolderGit2, FolderOpen, Lock, RefreshCw, Users } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { Badge } from "@/components/ui/badge";
+import { FolderGit2, FolderOpen, Lock, LockKeyhole, RefreshCw, Users } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { type Confirm, ConfirmDialog } from "@/components/confirm-dialog";
+import { LockSection } from "@/components/lock-section";
+import { DropOverlay, ErrorBox, Loading, NoticeBox, WarningBox, Welcome } from "@/components/notices";
+import { type Results, ResultsPanel } from "@/components/results";
 import { Button } from "@/components/ui/button";
-import { type LockReport, type LockRow, initialFolder, listLocks } from "@/lib/api";
+import {
+  type LockReport,
+  type LockRow,
+  type OpResult,
+  type OthersLock,
+  droppedFolder,
+  initialFolder,
+  listLocks,
+  lockFiles,
+  previewForceUnlock,
+  unlockFiles,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const LAST_FOLDER_KEY = "repo-tweaks.lastFolder";
@@ -31,10 +46,18 @@ export function App() {
   const [report, setReport] = useState<LockReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // A lock / unlock in progress. The folder cannot change meanwhile, so its result and the
+  // refresh after it always belong to the folder on screen.
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState<Results | null>(null);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
   // Ignore answers to older requests when the folder changes while one is in flight.
   // (The Rust side runs git lfs one call at a time and stops a hung git after 60 seconds.)
   const requestId = useRef(0);
   const started = useRef(false);
+  const busyRef = useRef(false);
 
   const refresh = useCallback(async (target: string) => {
     const id = ++requestId.current;
@@ -57,8 +80,14 @@ export function App() {
 
   const openFolder = useCallback(
     (target: string) => {
+      if (busyRef.current) {
+        setNotice("ロック・解除の途中です。終わってからフォルダを開いてください");
+        return;
+      }
       setReport(null);
       setError(null);
+      setResults(null);
+      setNotice(null);
       setDir(target);
       void refresh(target);
     },
@@ -84,17 +113,142 @@ export function App() {
     if (typeof picked === "string") openFolder(picked);
   }, [openFolder]);
 
+  // Dropping a folder on the window opens it.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const payload = event.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          setDragging(true);
+        } else if (payload.type === "leave") {
+          setDragging(false);
+        } else if (payload.type === "drop") {
+          setDragging(false);
+          void droppedFolder(payload.paths).then((folder) => {
+            if (folder) openFolder(folder);
+            else setNotice("フォルダをドロップしてください（ファイルのロックは「ファイルをロック」からできます）");
+          });
+        }
+      })
+      .then((stop) => {
+        // The effect may already be cleaned up (React runs it twice in development)
+        if (cancelled) stop();
+        else unlisten = stop;
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [openFolder]);
+
+  /** Run a lock / unlock, show what happened to each file, then reload the list. */
+  const runOp = useCallback(
+    async (title: string, op: () => Promise<OpResult[]>) => {
+      if (!dir) return;
+      busyRef.current = true;
+      setBusy(true);
+      setResults(null);
+      setNotice(null);
+      try {
+        setResults({ title, rows: await op() });
+      } catch (e) {
+        setResults({ title, error: String(e) });
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+      void refresh(dir);
+    },
+    [dir, refresh],
+  );
+
+  const lockFromDialog = useCallback(async () => {
+    if (!report) return;
+    const picked = await open({ multiple: true, defaultPath: report.root, title: "ロックするファイルを選ぶ" });
+    if (!picked || picked.length === 0) return;
+    void runOp("ロック", () => lockFiles(report.root, picked));
+  }, [report, runOp]);
+
+  const unlockOwn = useCallback(
+    (lock: LockRow) => {
+      if (!report) return;
+      void runOp("解除", () => unlockFiles(report.root, [lock.path], false, []));
+    },
+    [report, runOp],
+  );
+
+  // Our own lock that git lfs refused (uncommitted changes, deleted file): remove it by ID.
+  const forceOwn = useCallback(
+    (path: string) => {
+      if (!report) return;
+      setConfirm({
+        title: "変更を残したまま解除しますか？",
+        message:
+          "未コミットの変更や、手元に無いファイルがあっても、自分のロックを解除します。ファイルの変更はそのまま残ります。解除したあとは、ほかの人がロックして編集できるようになります。",
+        items: [{ path }],
+        confirmLabel: "解除する",
+        onConfirm: () => {
+          setConfirm(null);
+          void runOp("解除", () => unlockFiles(report.root, [path], true, []));
+        },
+      });
+    },
+    [report, runOp],
+  );
+
+  // Someone else's lock: show exactly what would go (with its .meta), then remove only those.
+  const forceOthers = useCallback(
+    async (lock: LockRow) => {
+      if (!report) return;
+      busyRef.current = true;
+      setBusy(true);
+      setNotice(null);
+      let others: OthersLock[];
+      try {
+        others = await previewForceUnlock(report.root, [lock.path]);
+      } catch (e) {
+        setResults({ title: "強制解除", error: String(e) });
+        return;
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+      if (others.length === 0) {
+        setNotice(`${lock.path} のロックは、すでに解除されています`);
+        if (dir) void refresh(dir);
+        return;
+      }
+      setConfirm({
+        title: "他人のロックを強制解除しますか？",
+        message:
+          "ロックしている人の作業が失われるおそれがあります。先に本人に確かめてください。GitHub では、リポジトリの管理者（admin）だけが強制解除できます。",
+        items: others.map((o) => ({ path: o.path, detail: `${o.owner}  ${o.lockedAt} から` })),
+        confirmLabel: "強制解除する",
+        onConfirm: () => {
+          setConfirm(null);
+          const ids = others.map((o) => o.id);
+          void runOp("強制解除", () => unlockFiles(report.root, [lock.path], true, ids));
+        },
+      });
+    },
+    [report, dir, runOp, refresh],
+  );
+
+  const closeConfirm = useCallback(() => setConfirm(null), []);
+
   // Ctrl/Cmd+R and F5 reload the lock list instead of the page.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const reload = e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r");
       if (!reload) return;
       e.preventDefault();
-      if (dir && !loading) void refresh(dir);
+      if (dir && !loading && !busy) void refresh(dir);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dir, loading, refresh]);
+  }, [dir, loading, busy, refresh]);
 
   return (
     <div className="flex h-full flex-col">
@@ -108,18 +262,22 @@ export function App() {
             {report?.root ?? dir ?? "フォルダが選ばれていません"}
           </div>
         </div>
-        {report && <span className="hidden text-xs text-zinc-500 sm:inline">{report.fetchedAt} に更新</span>}
+        {report && <span className="hidden text-xs text-zinc-500 md:inline">{report.fetchedAt} に更新</span>}
         <Button
           variant="ghost"
           size="icon"
           onClick={() => dir && void refresh(dir)}
-          disabled={!dir || loading}
+          disabled={!dir || loading || busy}
           title="更新（Ctrl+R / ⌘R）"
           aria-label="更新"
         >
-          <RefreshCw className={cn(loading && "animate-spin")} />
+          <RefreshCw className={cn((loading || busy) && "animate-spin")} />
         </Button>
-        <Button variant="outline" size="sm" onClick={() => void chooseFolder()}>
+        <Button variant="outline" size="sm" onClick={() => void lockFromDialog()} disabled={!report || busy}>
+          <LockKeyhole />
+          ファイルをロック
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => void chooseFolder()} disabled={busy}>
           <FolderOpen />
           フォルダを開く
         </Button>
@@ -128,131 +286,43 @@ export function App() {
       <main className="flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-5xl flex-col gap-5 p-5">
           {ready && !dir && <Welcome onOpen={() => void chooseFolder()} />}
+          {notice && <NoticeBox message={notice} />}
           {error && (
             <ErrorBox
               message={error}
               note={report ? `${report.fetchedAt} に取得した一覧を表示しています` : undefined}
             />
           )}
+          {results && (
+            <ResultsPanel results={results} onClose={() => setResults(null)} onForce={forceOwn} disabled={busy} />
+          )}
           {dir && !report && !error && loading && <Loading />}
           {report && (
             <div className={cn("flex flex-col gap-5 transition-opacity", loading && "opacity-60")}>
-              {report.staleWarning && (
-                <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
-                  <AlertTriangle className="size-4 shrink-0" />
-                  {report.staleWarning}
-                </div>
-              )}
+              {report.staleWarning && <WarningBox message={report.staleWarning} />}
               <LockSection
                 icon={<Lock className="size-4" />}
                 title="自分のロック"
                 locks={report.ours}
                 showOwner={false}
+                action={{ label: "解除", onClick: unlockOwn }}
+                disabled={busy || loading}
               />
               <LockSection
                 icon={<Users className="size-4" />}
                 title="他人のロック"
                 locks={report.theirs}
                 showOwner
+                action={{ label: "強制解除", danger: true, onClick: (lock) => void forceOthers(lock) }}
+                disabled={busy || loading}
               />
             </div>
           )}
         </div>
       </main>
+
+      {dragging && <DropOverlay />}
+      {confirm && <ConfirmDialog confirm={confirm} onCancel={closeConfirm} />}
     </div>
-  );
-}
-
-function Welcome({ onOpen }: { onOpen: () => void }) {
-  return (
-    <div className="flex flex-col items-center gap-4 rounded-xl border border-dashed border-zinc-300 px-6 py-16 text-center dark:border-zinc-700">
-      <FolderGit2 className="size-10 text-zinc-400" />
-      <div>
-        <div className="font-semibold">リポジトリのフォルダを開いてください</div>
-        <div className="mt-1 text-sm text-zinc-500">Git LFS のロックの一覧を表示します</div>
-      </div>
-      <Button onClick={onOpen}>
-        <FolderOpen />
-        フォルダを開く
-      </Button>
-    </div>
-  );
-}
-
-function ErrorBox({ message, note }: { message: string; note?: string }) {
-  return (
-    <div className="flex gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">
-      <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-      <div className="min-w-0">
-        <div className="break-words select-text">{message}</div>
-        {note && <div className="mt-1 text-xs text-red-700/80 dark:text-red-300/80">{note}</div>}
-      </div>
-    </div>
-  );
-}
-
-function Loading() {
-  return (
-    <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-500">
-      <RefreshCw className="size-4 animate-spin" />
-      ロックの一覧を取得しています…
-    </div>
-  );
-}
-
-function LockSection({
-  icon,
-  title,
-  locks,
-  showOwner,
-}: {
-  icon: ReactNode;
-  title: string;
-  locks: LockRow[];
-  showOwner: boolean;
-}) {
-  return (
-    <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-xs dark:border-zinc-800 dark:bg-zinc-900">
-      <h2 className="flex items-center gap-2 border-b border-zinc-100 px-4 py-2.5 text-sm font-semibold dark:border-zinc-800">
-        <span className="text-zinc-500">{icon}</span>
-        {title}
-        <Badge>{locks.length}</Badge>
-      </h2>
-      {locks.length === 0 ? (
-        <div className="px-4 py-6 text-center text-sm text-zinc-500">なし</div>
-      ) : (
-        <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
-          {locks.map((lock) => (
-            <LockItem key={lock.id} lock={lock} showOwner={showOwner} />
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-function LockItem({ lock, showOwner }: { lock: LockRow; showOwner: boolean }) {
-  const slash = lock.path.lastIndexOf("/");
-  const folder = lock.path.slice(0, slash + 1);
-  const file = lock.path.slice(slash + 1);
-  return (
-    <li className="flex items-center gap-4 px-4 py-2.5 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800/50">
-      <div className="min-w-0 flex-1 truncate font-mono text-[13px] select-text" title={lock.path}>
-        <span className="text-zinc-400 dark:text-zinc-500">{folder}</span>
-        <span className="font-medium">{file}</span>
-      </div>
-      {showOwner && <div className="w-32 shrink-0 truncate text-zinc-600 dark:text-zinc-300">{lock.owner}</div>}
-      <div className="shrink-0 text-right whitespace-nowrap text-zinc-500 tabular-nums">{lock.lockedAt} から</div>
-      <div className="flex w-28 shrink-0 justify-end">
-        {lock.stale ? (
-          <Badge variant="warning" title="古いロック（解除し忘れていないか確かめてください）">
-            <AlertTriangle />
-            {lock.age}
-          </Badge>
-        ) : (
-          <span className="text-zinc-500 tabular-nums">{lock.age}</span>
-        )}
-      </div>
-    </li>
   );
 }

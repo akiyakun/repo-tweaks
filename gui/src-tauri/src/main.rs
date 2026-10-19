@@ -11,10 +11,11 @@ use std::time::Duration;
 use repo_tweaks_core::git::{self, GitConfig, KEY_STALE_DAYS};
 use repo_tweaks_core::lfs;
 use repo_tweaks_core::locks::resolve_stale_days;
+use repo_tweaks_core::ops;
 use repo_tweaks_core::paths::RepoContext;
 use time::OffsetDateTime;
 
-use view::LockReport;
+use view::{LockReport, OpResult, OthersLock};
 
 /// git lfs shares a lock cache per repository (.git/lfs/lockcache.db), so its calls must not overlap.
 /// The GUI runs one at a time; a hung git is stopped by the time limit, which frees the next one.
@@ -45,6 +46,55 @@ async fn list_locks(dir: String) -> Result<LockReport, String> {
         Ok(LockReport::new(&ctx.root, name, &locks, OffsetDateTime::now_utc(), stale_days))
     })
     .await
+}
+
+/// Lock files of the repository at `root` (with their Unity `.meta`). Paths are absolute or
+/// relative to `root`.
+#[tauri::command]
+async fn lock_files(root: String, paths: Vec<String>) -> Result<Vec<OpResult>, String> {
+    blocking(move || {
+        let ctx = RepoContext::open(&root)?;
+        let config = GitConfig::read_in(&ctx.root);
+        let plan = ops::plan_lock_in(ctx, &config, &paths, true)?;
+        Ok(view::op_results(&plan.lock(), OffsetDateTime::now_utc()))
+    })
+    .await
+}
+
+/// Other people's locks that a forced unlock of `paths` would remove (for the confirmation).
+#[tauri::command]
+async fn preview_force_unlock(root: String, paths: Vec<String>) -> Result<Vec<OthersLock>, String> {
+    blocking(move || {
+        let ctx = RepoContext::open(&root)?;
+        let config = GitConfig::read_in(&ctx.root);
+        let plan = ops::plan_unlock_in(ctx, &config, &paths, true, true)?;
+        let now = OffsetDateTime::now_utc();
+        Ok(plan.others_locks().into_iter().map(|l| OthersLock::new(l, now)).collect())
+    })
+    .await
+}
+
+/// Unlock files (and the `.meta` partners we may unlock). With `force`, other people's locks are
+/// removed only if every one of them is among `confirmed` (lock IDs the user agreed to): the plan
+/// is made again here, and a lock that changed since the confirmation stops everything.
+#[tauri::command]
+async fn unlock_files(root: String, paths: Vec<String>, force: bool, confirmed: Vec<String>) -> Result<Vec<OpResult>, String> {
+    blocking(move || {
+        let ctx = RepoContext::open(&root)?;
+        let config = GitConfig::read_in(&ctx.root);
+        let plan = ops::plan_unlock_in(ctx, &config, &paths, true, force)?;
+        if plan.others_locks().iter().any(|l| !confirmed.contains(&l.id)) {
+            return Err("確認したあとにロックの状態が変わりました。一覧を更新して、もう一度やり直してください（何も変更していません）".into());
+        }
+        Ok(view::op_results(&plan.unlock(), OffsetDateTime::now_utc()))
+    })
+    .await
+}
+
+/// The first of `paths` that is a folder (for a drag and drop onto the window).
+#[tauri::command]
+fn dropped_folder(paths: Vec<String>) -> Option<String> {
+    paths.into_iter().find(|p| std::path::Path::new(p).is_dir())
 }
 
 /// A folder given on the command line (`repo-tweaks-gui <folder>`, e.g. from a Fork custom command),
@@ -90,7 +140,14 @@ fn main() {
     git::set_timeout(GIT_TIME_LIMIT);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![list_locks, initial_folder])
+        .invoke_handler(tauri::generate_handler![
+            list_locks,
+            lock_files,
+            preview_force_unlock,
+            unlock_files,
+            dropped_folder,
+            initial_folder
+        ])
         .run(tauri::generate_context!())
         .expect("repo-tweaks の起動に失敗しました");
 }
