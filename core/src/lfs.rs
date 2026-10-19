@@ -2,7 +2,8 @@
 //!
 //! `git lfs locks --verify --json` exits 0 with an empty list outside a repository, without a remote,
 //! and even when authentication fails (the reason only goes to stderr). So the repository and remote
-//! are checked first, and stderr is inspected even on success.
+//! are checked first, and stderr is inspected even on success. Network errors are worse: with `--json`
+//! they print nothing at all, so an empty list is confirmed once more without `--json`.
 
 use crate::git::{self, GitConfig};
 use crate::locks::{parse_verify_json, LockList};
@@ -14,9 +15,8 @@ pub fn fetch_locks(config: &GitConfig) -> Result<LockList, String> {
     query_locks()
 }
 
-/// Like `fetch_locks`, for the repository at `dir`. `config` must be read there too (`GitConfig::read_in`).
-pub fn fetch_locks_in(dir: &str, config: &GitConfig) -> Result<LockList, String> {
-    let ctx = RepoContext::open(dir)?;
+/// Like `fetch_locks`, for a repository the GUI opened. `config` must be read there too (`GitConfig::read_in`).
+pub fn fetch_locks_in(ctx: &RepoContext, config: &GitConfig) -> Result<LockList, String> {
     require_remote(config)?;
     query_locks_in(&ctx.root)
 }
@@ -35,13 +35,31 @@ pub(crate) fn query_locks() -> Result<LockList, String> {
 }
 
 fn query_locks_in(dir: &str) -> Result<LockList, String> {
-    let output = git::output_in(dir, &["lfs", "locks", "--verify", "--json"])
-        .map_err(|_| "git が見つかりません。Git をインストールしてください".to_string())?;
-    interpret(
+    let output = git::run_in(dir, &["lfs", "locks", "--verify", "--json"])?;
+    let locks = interpret(
         output.status.success(),
         &String::from_utf8_lossy(&output.stdout),
         &String::from_utf8_lossy(&output.stderr),
-    )
+    )?;
+    if locks.is_empty() {
+        confirm_empty(dir)?;
+    }
+    Ok(locks)
+}
+
+/// `git lfs locks --verify --json` turns a network error into exit 0 and an empty list with no message
+/// (git-lfs 3.7). The text form does report it, so ask again that way (one lock is enough).
+fn confirm_empty(dir: &str) -> Result<(), String> {
+    let output = git::run_in(dir, &["lfs", "locks", "--verify", "--limit", "1"])?;
+    confirmation(output.status.success(), &String::from_utf8_lossy(&output.stderr))
+}
+
+fn confirmation(success: bool, stderr: &str) -> Result<(), String> {
+    if success {
+        Ok(())
+    } else {
+        Err(format!("ロック一覧を取得できませんでした。{}", explain(first_line(stderr))))
+    }
 }
 
 fn interpret(success: bool, stdout: &str, stderr: &str) -> Result<LockList, String> {
@@ -85,7 +103,13 @@ pub(crate) fn explain(line: &str) -> String {
         "権限がありません。ログインしているアカウントに、このリポジトリへの書き込み権限があるか確かめてください。"
     } else if lower.contains("locking api") || lower.contains("not supported") || lower.contains("does not support") {
         "このサーバー（remote）はロック機能に対応していないようです。"
-    } else if lower.contains("could not resolve host") || lower.contains("timed out") || lower.contains("connection") {
+    } else if lower.contains("could not resolve host")
+        || lower.contains("no such host")
+        || lower.contains("dial tcp")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("connection")
+    {
         "サーバーにつながりませんでした。ネットワークを確かめてください。"
     } else {
         ""
@@ -135,6 +159,16 @@ mod tests {
         // SSH key problems are login problems, not permissions on locks
         assert!(explain("git@github.com: Permission denied (publickey).").contains("ログインできませんでした"));
         assert_eq!(first_line("\n  \nfirst\nsecond"), "first");
+    }
+
+    #[test]
+    fn empty_list_is_confirmed() {
+        // Captured from git-lfs 3.7 (text form): with --json the same failure printed nothing and exited 0
+        let stderr = "Error while retrieving locks: Post \"https://invalid.example/o/r.git/info/lfs/locks/verify\": dial tcp: lookup invalid.example: no such host\n";
+        let err = confirmation(false, stderr).unwrap_err();
+        assert!(err.contains("サーバーにつながりませんでした"), "{err}");
+        assert!(err.contains("no such host"), "{err}");
+        assert!(confirmation(true, "").is_ok());
     }
 
     #[test]

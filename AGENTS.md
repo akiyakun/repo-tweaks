@@ -3,12 +3,19 @@
 Git LFS のロックを土台にした、Unity チーム開発向けのファイルロック管理ツール。
 ロックの正本は GitHub / GitLab の LFS ロック。自作サーバーは通知とキャッシュだけを担い、落ちてもロックは動く。
 
+## Language
+
+- Always communicate with the user in Japanese.
+- Explanations, questions, progress updates, and summaries must be written in Japanese.
+- Keep code, identifiers, commands, file names, and quoted error messages in their original language when appropriate.
+- Even if source files, tool outputs, logs, or documentation are written in English, continue communicating with the user in Japanese.
+
 ## 進め方
 
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
-- 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）、Step 5（サーバーによる定期的な照合と滞留の警告。GitHub のみ）。
+- 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）、Step 5（サーバーによる定期的な照合と滞留の警告。GitHub のみ）、Step 6（`.gitattributes` の lockable を対象に、`status` / pre-commit の `check` / `install-hooks`。実機の確認待ち）。
 - GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）を作成。Mac / Windows の実機では未確認。
-- 次の候補は、`status`（`.gitattributes` の lockable と突き合わせ）、Unity 拡張（HANDOFF のフェーズ 2）、GitLab への照合の対応。通知先は Discord（Slack は後回し）。
+- 次の候補は、Unity 拡張（HANDOFF のフェーズ 2。ロックしていない lockable のアセットを `IsOpenForEdit` でグレーアウトし、ロック・解除のボタンを付ける）、GitLab への照合の対応。通知先は Discord（Slack は後回し）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
 ## 実機で確かめたこと（GitHub、Mac / Windows）
@@ -34,11 +41,11 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 ```text
 repo-tweaks/
 ├─ Cargo.toml        Rust workspace（members: core, cli）
-├─ core/             Rust のライブラリ。git.rs（git の呼び出し・設定）、locks.rs（ロックの解釈・古さ・日本時間の表示）、lfs.rs（git lfs locks の実行とエラーの見分け）、paths.rs（パスをリポジトリのルートからの相対に直す）、ops.rs（ロック・解除の計画と実行）
-├─ cli/              Rust の CLI。コマンド名 repo-tweaks（list / lock / unlock / ping / notify / events）
+├─ core/             Rust のライブラリ。git.rs（git の呼び出し・設定）、locks.rs（ロックの解釈・古さ・日本時間の表示）、lfs.rs（git lfs locks の実行とエラーの見分け）、paths.rs（パスをリポジトリのルートからの相対に直す）、ops.rs（ロック・解除の計画と実行）、lockable.rs（lockable のファイルの状態とコミット前の確認）
+├─ cli/              Rust の CLI。コマンド名 repo-tweaks（list / lock / unlock / status / check / install-hooks / ping / notify / events）
 ├─ gui/              Tauri v2 + React + TypeScript + Tailwind CSS（shadcn/ui 風の部品は src/components/ui に手で置く）。src-tauri/ が Rust 側で、core を直接使う
 ├─ server/           Python 3.12 + Starlette + uvicorn + Jinja2。Docker で動かす。app.py（CLI 用 API）、admin.py（管理画面）、security.py / settings.py / notify.py（cloud-drive-sync の管理画面と同じ作り）
-├─ hooks/            git hook のサンプル（post-commit）
+├─ hooks/            git hook（pre-commit / post-commit）。install-hooks が include_str! で埋め込んで書き出す
 └─ unity/            Unity Editor 拡張（未着手）
 ```
 
@@ -49,6 +56,9 @@ repo-tweaks/
 - リポジトリの識別子は `remote.origin.url` を正規化した `host/owner/repo`（認証情報・ポートは除く）。フォルダ名に頼らない。
 - ロジックは core に置き、CLI は表示と引数だけにする（GUI・Unity からも使うため）。
 - GUI は CLI を呼ばず、core を直接使う。core の関数はカレントディレクトリを相手にするので、GUI 用に `GitConfig::read_in` / `RepoContext::open` / `lfs::fetch_locks_in` のようにフォルダを受け取る版を足す（GUI でカレントディレクトリを変えない。スレッドをまたいで共有されるため）。
+- GUI の見出しのリポジトリ名は `git::repo_name`（remote の名前を優先、無ければフォルダ名）。CLI・サーバーと同じ名前にする。
+- `git::run_in` は、フォルダが無いときに「git が見つかりません」ではなく「フォルダが見つかりません」を返す。`RepoContext` の rev-parse が失敗したときは、git の理由の行を添える（NAS 上の `dubious ownership` には `safe.directory` の案内）。
+- GUI は起動時に `GIT_TERMINAL_PROMPT=0` を設定する（端末で認証を聞かれて止まらないように）。一覧の取得は 60 秒で打ち切り、更新に失敗しても直前の一覧は残す。最後に開いたフォルダは、開けたときだけ覚える。
 - GUI の表示用の文字列（日本時間・経過時間・古さ）は Rust 側（gui/src-tauri/src/view.rs）で core の format_jst / format_age を使って作り、CLI と同じ言い回しにする。
 - GUI は起動時に `git::hide_console_windows()` を呼ぶ（Windows で git の窓を出さない。CLI では呼ばない。端末で認証を聞けるようにするため）。Mac では起動時に Homebrew などの bin を PATH に足す。
 - `gui/src-tauri` は workspace の外（`exclude`）で、Cargo.lock も別。ルートの `cargo test` には入らない。
@@ -56,6 +66,7 @@ repo-tweaks/
 - サーバーの security.py / settings.py / notify.py と admin.py のログイン・CSRF・ヘッダーの処理は、cloud-drive-sync の `cds_admin` の写し。安全のための修正をしたら、もう片方にも入れるよう利用者に伝える（このリポジトリで足した修正：フォームの大きさの上限、Origin はホスト名とポートで比較、scrypt を別スレッドで実行、ロックの通知を応答のあとに送る、壊れた admin.json で 500 にしない）。
 - 管理画面の設定の既定の保存先は `server/data/dev`（起動した場所によらない。git に入れない）。
 - `git lfs locks --verify --json` は、リポジトリ外・remote なし・認証失敗でも終了コード 0 で空の一覧を返す。必ず事前の確認と stderr（`fatal:` / `error`）の確認をして、空の一覧を「ロックなし」と誤表示しない。JSON の `[]`（`--verify` なしの形）も受け付けない。
+- **ネットワークのエラー（ホストが無い等）では、`--json` は stderr に何も出さず、終了コード 0 で空の一覧を返す**（git-lfs 3.7 で確認）。そのため空の一覧のときだけ、`git lfs locks --verify --limit 1`（`--json` なし。エラーなら終了コード 2）でもう一度確かめる。
 - lock / unlock は「計画（パスの解決・.meta の追加・一覧から自分 / 他人 / 未ロックを判定）→ 実行」の2段階。強制解除の確認は計画と実行の間で、呼ぶ側（CLI の y/N、Unity・GUI の画面）が行う。core は確認しない。
 - `.meta` の扱い：lock はディスクにある相方を追加、unlock は自分の（`--force` なら誰のでも）ロックの相方だけを追加。相方は元のファイルが成功したときだけ処理する（持ち主が分かれないように）。`--no-meta` で無効。
 - git lfs は1回の呼び出しに複数パスを渡す（指定したファイル → 相方の2回）。並列に実行しない（`.git/lfs/lockcache.db` を共有するため）。
@@ -68,6 +79,10 @@ repo-tweaks/
 - 照合（server/repo_tweaks_server/reconcile.py）：前回のロック一覧と比べ、増えた・消えたもののうち通知済みでないものを流す。通知済みは「remote + ロックの ID」で state.json に残し、CLI のイベント（`files` の `id`）も記録する。初回は数えるだけ。失敗は「失敗し始め」と「直った」ときだけ通知（リポジトリごとにどんな例外も失敗として記録し、ほかは続ける）。通知済みの ID は、照合で見ていないものは 7 日で忘れる。取られて 2 分以内のロックは `pending` として持ち越し、2 分後にもう一度照合する（CLI の通知との行き違いを防ぐ。いつもの間隔は待たない）。remote は小文字にそろえる。照合中に登録が消えたら結果を保存しない。滞留の警告は照合が失敗中のリポジトリを除く。
 - GitHub の LFS ロック API（server/repo_tweaks_server/lfs_api.py）：`https://github.com/<o>/<r>.git/info/lfs/locks`、Basic 認証。送り先は github.com だけ、リダイレクトとプロキシは使わない（トークンをよそへ送らない）。
 - `notify` は hook の中で動くので、git の起動回数を増やさない（`git config --get-regexp` と `git rev-parse` を1回ずつ）。
+- lockable（Step 6）：対象は `.gitattributes` の `lockable`（LFS で管理していないファイルにも効き、checkout で読み取り専用になる。git-lfs 3.7 で確認）。git には pathspec `:(attr:lockable)` で絞って聞く（`ls-files` / `status` / `diff` で使える）。`check` はステージされた変更・削除に自分のロックを求め、追加は求めない（ただし他人が先にそのパスをロックしていれば止める。`--no-renames` なので、リネーム元は削除として扱う）。マージ中（MERGE_HEAD がある）は、MERGE_HEAD とも違うファイルだけを見る。対象の変更が無ければネットワークに触れない。ロックを確かめられないときは警告して通す。
+- pre-commit の hook は、`repo-tweaks check` の終了コードが 1 のときだけコミットを止める（2 などは古い repo-tweaks で `check` が無いときなので、警告して通す）。
+- `git lfs install` は既にある hook（repo-tweaks の post-commit など）で止まり、そのあとの hook（post-merge など）を入れない。`install-hooks` は pre-push / post-checkout / post-merge が無ければ git-lfs 3.7 と同じ中身で書く。既にある hook は、読めない・UTF-8 でないものも含めて「別の hook」として扱い、黙って上書きしない。`core.hooksPath` が git 全体の設定なら入れない（ほかのリポジトリにも効くため）。
+- Git LFS の pre-push のロック確認は、送る LFS のオブジェクトについてだけ。LFS 外の lockable（テキストの .unity など）は pre-commit の `check` だけで守る。
 
 ## 環境
 

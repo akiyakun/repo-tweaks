@@ -36,6 +36,23 @@ fn command() -> Command {
     command
 }
 
+/// What it means when `git` cannot be started: it is not installed (or not on PATH).
+pub const GIT_MISSING: &str = "git が見つかりません。Git をインストールしてください";
+
+/// Like `output`, with a git that cannot be started turned into GIT_MISSING.
+pub fn run(args: &[&str]) -> Result<Output, String> {
+    output(args).map_err(|_| GIT_MISSING.to_string())
+}
+
+/// Like `output_in`, with a git that cannot be started turned into GIT_MISSING.
+/// A missing `dir` also stops git from starting, so that is checked first and reported as such.
+pub fn run_in(dir: &str, args: &[&str]) -> Result<Output, String> {
+    if !Path::new(dir).is_dir() {
+        return Err(format!("フォルダが見つかりません: {dir}"));
+    }
+    output_in(dir, args).map_err(|_| GIT_MISSING.to_string())
+}
+
 /// Run `git <args>` and return the raw output (for callers that need stderr).
 pub fn output(args: &[&str]) -> std::io::Result<Output> {
     command().args(args).output()
@@ -128,15 +145,29 @@ impl RepoInfo {
     }
 
     fn build(config: &GitConfig, toplevel: Option<String>, commit: Option<String>, branch: Option<String>) -> Self {
-        let remote = config.get(KEY_REMOTE).and_then(|url| normalize_remote(&url));
-        // Prefer the remote's last path segment: the local folder name may differ per clone.
-        let repo = remote
-            .as_deref()
-            .and_then(|r| r.rsplit('/').next())
-            .map(str::to_string)
-            .or_else(|| toplevel.and_then(|t| Path::new(&t).file_name().map(|n| n.to_string_lossy().into_owned())));
-        RepoInfo { repo, remote, branch, commit, user: config.get(KEY_USER) }
+        RepoInfo {
+            repo: repo_name(config, toplevel.as_deref()),
+            remote: remote_id(config),
+            branch,
+            commit,
+            user: config.get(KEY_USER),
+        }
     }
+}
+
+/// `host/owner/repo` of remote.origin.url, the identity shared by every clone.
+pub fn remote_id(config: &GitConfig) -> Option<String> {
+    config.get(KEY_REMOTE).and_then(|url| normalize_remote(&url))
+}
+
+/// Name to show for a repository: the remote's last path segment, else the folder name.
+/// The remote comes first because the local folder name may differ per clone.
+pub fn repo_name(config: &GitConfig, toplevel: Option<&str>) -> Option<String> {
+    remote_id(config)
+        .as_deref()
+        .and_then(|r| r.rsplit('/').next())
+        .map(str::to_string)
+        .or_else(|| toplevel.and_then(|t| Path::new(t).file_name().map(|n| n.to_string_lossy().into_owned())))
 }
 
 /// Turn a remote URL into `host/owner/repo`, dropping scheme, credentials, port and `.git`.

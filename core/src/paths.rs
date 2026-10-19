@@ -23,10 +23,9 @@ impl RepoContext {
     }
 
     fn rev_parse(dir: &str, not_a_repo: &str) -> Result<Self, String> {
-        let output = git::output_in(dir, &["rev-parse", "--show-toplevel", "--show-prefix"])
-            .map_err(|_| "git が見つかりません。Git をインストールしてください".to_string())?;
+        let output = git::run_in(dir, &["rev-parse", "--show-toplevel", "--show-prefix"])?;
         if !output.status.success() {
-            return Err(not_a_repo.into());
+            return Err(not_a_repo_error(not_a_repo, &String::from_utf8_lossy(&output.stderr)));
         }
         let text = String::from_utf8_lossy(&output.stdout);
         let mut lines = text.lines();
@@ -61,6 +60,21 @@ impl RepoContext {
             .unwrap_or_default();
         match_case(paths, &tracked)
     }
+}
+
+/// `not_a_repo` alone for the usual "not a git repository", otherwise with git's reason
+/// (e.g. `safe.directory` for a repository on a network share owned by another user).
+fn not_a_repo_error(not_a_repo: &str, stderr: &str) -> String {
+    let line = stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    if line.is_empty() || line.to_ascii_lowercase().contains("not a git repository") {
+        return not_a_repo.into();
+    }
+    let hint = if line.contains("dubious ownership") {
+        "このフォルダの持ち主が今のユーザーと違うため、git が開くのを断りました。git config --global --add safe.directory <フォルダ> で許可できます。"
+    } else {
+        "git でこのフォルダを開けませんでした。"
+    };
+    format!("{hint}（git: {line}）")
 }
 
 /// Replace each path with the tracked path that equals it ignoring case (only when that match is unique).
@@ -136,12 +150,24 @@ mod tests {
     const ROOT: &str = "/work/game";
 
     #[test]
-    fn opening_a_plain_folder_is_an_error() {
-        let dir = std::env::temp_dir().join(format!("repo-tweaks-not-a-repo-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let result = RepoContext::open(dir.to_str().unwrap());
-        std::fs::remove_dir_all(&dir).ok();
-        assert_eq!(result.err().as_deref(), Some("このフォルダは Git のリポジトリではありません"));
+    fn opening_a_missing_folder_says_so() {
+        let dir = std::env::temp_dir().join("repo-tweaks-missing").join(std::process::id().to_string());
+        let err = RepoContext::open(dir.to_str().unwrap()).err().unwrap();
+        assert!(err.starts_with("フォルダが見つかりません"), "{err}");
+    }
+
+    #[test]
+    fn not_a_repo_keeps_git_reason() {
+        const PLAIN: &str = "このフォルダは Git のリポジトリではありません";
+        let usual = "fatal: not a git repository (or any of the parent directories): .git\n";
+        assert_eq!(not_a_repo_error(PLAIN, usual), PLAIN);
+        assert_eq!(not_a_repo_error(PLAIN, ""), PLAIN);
+        // Captured from git 2.4x on a network share owned by another user
+        let dubious = "fatal: detected dubious ownership in repository at '//nas/share/game'\nTo add an exception for this directory, call:\n";
+        let err = not_a_repo_error(PLAIN, dubious);
+        assert!(err.contains("safe.directory"), "{err}");
+        assert!(err.contains("dubious ownership"), "{err}");
+        assert!(not_a_repo_error(PLAIN, "fatal: something else\n").contains("something else"));
     }
 
     #[test]

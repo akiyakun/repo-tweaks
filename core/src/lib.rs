@@ -2,6 +2,7 @@
 
 pub mod git;
 pub mod lfs;
+pub mod lockable;
 pub mod locks;
 pub mod ops;
 pub mod paths;

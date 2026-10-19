@@ -2,7 +2,7 @@
 
 
 Git LFS のロックを土台にした、ファイルロック管理ツール（作成中）。
-いまは **Step 5: ロックの定期的な照合と、滞留の警告** まで出来ています。
+いまは **Step 6: ロックが必要なファイルの指定（lockable）と、コミット前の確認** まで出来ています。
 
 Step 0 で作った、CLI とサーバーの疎通の流れ：
 
@@ -107,22 +107,29 @@ repo-tweaks ping
 設定は環境変数 `REPO_TWEAKS_SERVER` / `REPO_TWEAKS_TOKEN` が優先され、無ければ git config を読みます。
 Fork などの GUI クライアントはシェルの設定（`.zshrc`）を読まないため、git config に書くのが確実です。
 
-## 3. git hook から送る
+## 3. git hook を入れる
 
-試したいリポジトリで:
+使うリポジトリごとに、1 回だけ実行します（Mac / Windows 共通）。
 
 ```bash
-cp /path/to/repo-tweaks/hooks/post-commit .git/hooks/post-commit
-chmod +x .git/hooks/post-commit
+git lfs install               # Git LFS の設定（初めてのときだけ。hook が既にあると止まることがあるが、気にしなくてよい）
+repo-tweaks install-hooks     # repo-tweaks の pre-commit・post-commit と、足りない Git LFS の hook
 git commit --allow-empty -m "hook test"
 repo-tweaks events            # サーバーが受け取った通知を確認
 ```
 
-- このサンプルは、`git lfs install` が入れる post-commit（`git lfs post-commit`。lockable なファイルを読み取り専用に戻す処理）も呼びます。そのため、LFS の hook を上書きしてもかまいません。
-- **LFS 以外の自作の post-commit が既にある場合は、上書きせずに** サンプルの `# --- repo-tweaks ---` 以降を既存の hook の末尾に足してください。
-- この hook を入れたあとで `git lfs install` を実行すると「Hook already exists」と表示されますが、LFS の処理は入っているので問題ありません。
-- サーバーが止まっていても、警告が出るだけでコミットは成功します（3 秒で打ち切り）。
-- `repo-tweaks` が見つからないときは、警告を出して通知を飛ばします（`~/.cargo/bin` も探します。Windows では `.exe`）。
+| hook | 内容 |
+|---|---|
+| pre-commit | ロックが必要なファイルを、ロックせずに変更・削除していたらコミットを止める（下の「ロックが必要なファイル」） |
+| post-commit | コミットをサーバーに知らせる。Git LFS の post-commit（lockable なファイルを読み取り専用に戻す処理）も呼ぶ |
+
+- `install-hooks` は、git が使う hook のフォルダ（`core.hooksPath` を設定していればそちら）に書きます。
+  - 同じ内容ならそのまま、以前の repo-tweaks の hook と Git LFS 標準の post-commit は置き換えます。
+  - **それ以外の hook が既にあるときは書き換えません**。`--force` を付けると、元の hook を `<名前>.bak` に残してから上書きします。自作の hook を残したいときは、`hooks/` のサンプルの中身を既存の hook に足してください。
+- Git LFS の hook（pre-push / post-checkout / post-merge）が無ければ、`git lfs install` と同じものを入れます（`git lfs install` は、既にある hook で止まり、そのあとの hook を入れないことがあるため）。別の hook があって Git LFS の処理が入っていないときは、警告だけ出します。
+- `core.hooksPath` が git 全体の設定（`~/.gitconfig` など）になっているときは、入れません。入れると、ほかのすべてのリポジトリでもコミットの確認と通知が動いてしまうためです。
+- post-commit は、サーバーが止まっていても警告が出るだけでコミットは成功します（3 秒で打ち切り）。
+- `repo-tweaks` が見つからないときは、警告を出してそのまま進みます（`~/.cargo/bin` も探します。Windows では `.exe`）。Fork などの GUI からコミットするときも同じです。
 
 ## コマンド
 
@@ -131,6 +138,9 @@ repo-tweaks events            # サーバーが受け取った通知を確認
 | `repo-tweaks list [--json] [--stale-days N]` | ロックの一覧を、自分のロック / 他人のロックに分けて表示する。古いロックに印を付ける |
 | `repo-tweaks lock <パス>... [--no-meta] [--json]` | ファイルをロックする。Unity の `.meta` があれば一緒にロックする |
 | `repo-tweaks unlock <パス>... [--force [--yes]] [--no-meta] [--json]` | ロックを解除する。ロック中の `.meta` も一緒に解除する |
+| `repo-tweaks status [--all] [--json]` | ロックが必要なファイル（lockable）の、ロックと変更の状態を表示する |
+| `repo-tweaks check` | コミットしようとしている変更を確かめる（pre-commit hook から呼ぶ） |
+| `repo-tweaks install-hooks [--force]` | このリポジトリに pre-commit と post-commit の hook を入れる |
 | `repo-tweaks ping` | サーバーにつながるか、トークンが正しいかを確かめる |
 | `repo-tweaks notify --event <種類>` | 今のリポジトリ（名前と origin の URL）・ブランチ・コミット・ユーザー名を送る |
 | `repo-tweaks events [--limit N]` | サーバーが受け取った通知を新しい順に表示する |
@@ -198,13 +208,72 @@ repo-tweaks: 1 件は処理できませんでした
   Unity や GUI から呼ぶときは、呼ぶ側の画面で確認したうえで `--yes` を付けます。入力できない状態で `--yes` が無いときは、何もしません。強制解除できるかどうかは、GitHub / GitLab での権限によります。**GitHub ではリポジトリの管理者（admin）権限が必要です**（書き込み権限だけでは「You must have admin access to force delete a lock」で断られます）。GitLab は未確認です。
 - `--json` は、ファイルごとの結果（`result`：`locked` / `already_ours` / `held_by_other` / `no_such_file` / `is_directory` / `unlocked` / `force_unlocked` / `not_locked` / `others_lock` / `skipped_pair` / `failed`、`ok`、他人のロックなら `owner` と `locked_at`）を出力します。
 
+## ロックが必要なファイル（lockable）と、コミット前の確認
+
+Perforce の「チェックアウトしないと編集できない」に近い仕組みを、Git LFS の `lockable` で作ります。すべてのファイルではなく、指定したファイルだけが対象です。
+
+### 対象のファイルを決める
+
+リポジトリの `.gitattributes` に `lockable` を付けます。LFS で管理していないファイル（テキストの `.unity` や `.prefab`）にも付けられます。
+
+```text
+*.unity   lockable
+*.prefab  lockable
+Assets/Art/**/*.psd  filter=lfs diff=lfs merge=lfs -text lockable
+```
+
+- `.gitattributes` もコミットして、チームで同じものを使います。
+- Unity の `.meta` も守りたいときは、`*.unity.meta lockable` のように別に書きます（`repo-tweaks lock` は `.meta` も一緒にロックします）。
+
+### 3 段階で守る
+
+| いつ | 仕組み | 内容 |
+|---|---|---|
+| 編集するとき | Git LFS（もとからある） | 自分がロックしていない対象ファイルは、読み取り専用になる。`repo-tweaks lock` で書き込めるようになり、解除すると読み取り専用に戻る |
+| コミットするとき | pre-commit（`repo-tweaks check`） | 対象ファイルを、自分のロック無しで変更・削除していたらコミットを止める |
+| push するとき | Git LFS（もとからある） | 他人がロック中のファイルを変更していたら push を止める。**ただし LFS で管理しているファイルだけ**（Git LFS は、送る LFS のデータについてロックを確かめるため）。LFS 外の `.unity` などは、コミットの段でだけ止まる |
+
+- 読み取り専用は、checkout・commit・merge のあとに Git LFS が付け直します（`git lfs install` の hook が必要）。
+- **新しく追加したファイル**は、ロック無しでコミットできます（まだ誰も触っていないため）。ただし、そのパスを他人が先にロックしていれば止めます。リネームは「元のファイルの削除 + 新しいファイルの追加」として扱うので、元のファイルのロックが必要です。
+- **マージのコミット**では、相手のブランチから来た変更はそのまま通します。マージの途中で自分が手を入れたファイル（両方の親と違うもの）だけ、ロックが必要です。
+- **GitHub につながらない**など、ロックを確かめられないときは、警告を出してコミットを通します（オフラインでも作業を止めないため）。
+- どうしても止められたくないときは `git commit --no-verify` で飛ばせます（GitHub はサーバー側でロックを強制できないため、最後の砦ではありません）。
+
+止められたときの表示：
+
+```text
+repo-tweaks: ロックしていないファイルを変更しているため、コミットを止めました
+  Assets/Scenes/Main.unity  ロックなし
+  Assets/Art/hero.psd       bob がロック中
+ロックしてから、もう一度コミットしてください:
+  repo-tweaks lock Assets/Scenes/Main.unity
+他人がロック中のファイルは、変更を取り消すか、ロックしている人と相談してください
+```
+
+### 状態を見る（status）
+
+```text
+$ repo-tweaks status
+ロックが必要なファイル 120 件のうち、ロック中・変更中のもの（3）
+  Assets/Art/hero.psd          bob がロック中
+  Assets/Scenes/Main.unity     自分がロック中  変更あり
+  Assets/Prefabs/Enemy.prefab  ロックなし      変更あり  ⚠ ロックが必要
+
+⚠ ロックせずに変更しているものが 1 件あります。repo-tweaks lock でロックしてからコミットしてください
+```
+
+- 既定では、ロック中か変更中のものだけを表示します。`--all` ですべて表示します。
+- `--json` は、すべての対象ファイルについて `path`、`lock`（`none` / `ours` / `theirs`）、`owner`、`locked_at`（UTC）、`change`（`null` / `modified` / `deleted` / `added`）、`problem`（`null` / `not_locked` / `held_by_other`。このままではコミットできないもの）を出力します。
+
 ## GUI（作成中）
 
 Tauri v2 + React + TypeScript + Tailwind CSS で作っています。Rust 側は `core` をそのまま使うので、表示する内容は `repo-tweaks list` と同じです。
 いまは **ロックの一覧（読むだけ）** だけです。
 
 - 「フォルダを開く」でリポジトリのフォルダを選ぶと、自分のロック / 他人のロックを表示します。古いロックには印が付き、件数の警告も出ます（日数は `repo-tweaks.staleDays`、既定 3 日）。
-- 最後に開いたフォルダは、次の起動時に自動で開きます。
+- 最後に開けたフォルダは、次の起動時に自動で開きます。
+- 見出しのリポジトリ名は、remote（`github.com/example-org/game` なら `game`）から取ります。フォルダ名が違っても、CLI や Discord と同じ名前になります。
+- 一覧の取得は 60 秒で打ち切ります。更新に失敗したときは、エラーと一緒に直前の一覧を残します。
 - 更新はボタンか、`Ctrl+R` / `⌘R` / `F5` です。
 - 起動時の引数でフォルダを渡せます（`repo-tweaks-gui /path/to/repo`）。Fork のカスタムコマンドから開くときに使えます。
 

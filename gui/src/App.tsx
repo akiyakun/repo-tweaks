@@ -24,8 +24,36 @@ function saveLastFolder(dir: string) {
   }
 }
 
+// git lfs may wait on the network (or a credential prompt) for a long time; give up on it after this.
+const TIMEOUT_MS = 60_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(`${ms / 1000} 秒たっても応答がありません。ネットワークやログインを確かめて、もう一度更新してください`),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+function formatTime(at: Date): string {
+  return at.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+}
+
 export function App() {
-  const [dir, setDir] = useState<string | null>(loadLastFolder);
+  // Null until the start-up folder is known, so nothing is fetched for a folder that is not shown.
+  const [ready, setReady] = useState(false);
+  const [dir, setDir] = useState<string | null>(null);
   const [report, setReport] = useState<LockReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -37,45 +65,48 @@ export function App() {
     const id = ++requestId.current;
     setLoading(true);
     try {
-      const result = await listLocks(target);
+      const result = await withTimeout(listLocks(target), TIMEOUT_MS);
       if (id !== requestId.current) return;
       setReport(result);
       setError(null);
       setFetchedAt(new Date());
+      // Remember only folders that opened, so a mistyped one is not reopened next time.
+      saveLastFolder(target);
     } catch (e) {
       if (id !== requestId.current) return;
-      setReport(null);
+      // Keep the last list on screen: an older list is more useful than none.
       setError(String(e));
-      setFetchedAt(null);
     } finally {
       if (id === requestId.current) setLoading(false);
     }
   }, []);
 
+  const openFolder = useCallback(
+    (target: string) => {
+      setReport(null);
+      setError(null);
+      setFetchedAt(null);
+      setDir(target);
+      void refresh(target);
+    },
+    [refresh],
+  );
+
   // A folder given on the command line wins over the remembered one.
   useEffect(() => {
-    void initialFolder().then((arg) => {
-      if (arg) {
-        saveLastFolder(arg);
-        setDir(arg);
-      }
-    });
-  }, []);
-
-  useEffect(() => {
-    if (dir) void refresh(dir);
-  }, [dir, refresh]);
+    void initialFolder()
+      .catch(() => null)
+      .then((arg) => {
+        setReady(true);
+        const start = arg ?? loadLastFolder();
+        if (start) openFolder(start);
+      });
+  }, [openFolder]);
 
   const chooseFolder = useCallback(async () => {
     const picked = await open({ directory: true, title: "リポジトリのフォルダを選ぶ" });
-    if (typeof picked !== "string") return;
-    saveLastFolder(picked);
-    setReport(null);
-    setError(null);
-    setDir(picked);
-    // Same folder again: the effect does not fire, so reload explicitly.
-    if (picked === dir) void refresh(picked);
-  }, [dir, refresh]);
+    if (typeof picked === "string") openFolder(picked);
+  }, [openFolder]);
 
   // Ctrl/Cmd+R and F5 reload the lock list instead of the page.
   useEffect(() => {
@@ -103,7 +134,7 @@ export function App() {
         </div>
         {fetchedAt && (
           <span className="hidden text-xs text-zinc-500 sm:inline">
-            {fetchedAt.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })} に更新
+            {formatTime(fetchedAt)} に更新
           </span>
         )}
         <Button
@@ -124,8 +155,13 @@ export function App() {
 
       <main className="flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-5xl flex-col gap-5 p-5">
-          {!dir && <Welcome onOpen={() => void chooseFolder()} />}
-          {error && <ErrorBox message={error} />}
+          {ready && !dir && <Welcome onOpen={() => void chooseFolder()} />}
+          {error && (
+            <ErrorBox
+              message={error}
+              note={report && fetchedAt ? `${formatTime(fetchedAt)} に取得した一覧を表示しています` : undefined}
+            />
+          )}
           {dir && !report && !error && loading && <Loading />}
           {report && (
             <div className={cn("flex flex-col gap-5 transition-opacity", loading && "opacity-60")}>
@@ -171,11 +207,14 @@ function Welcome({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-function ErrorBox({ message }: { message: string }) {
+function ErrorBox({ message, note }: { message: string; note?: string }) {
   return (
     <div className="flex gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">
       <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-      <div className="break-words select-text">{message}</div>
+      <div className="min-w-0">
+        <div className="break-words select-text">{message}</div>
+        {note && <div className="mt-1 text-xs text-red-700/80 dark:text-red-300/80">{note}</div>}
+      </div>
     </div>
   );
 }

@@ -1,7 +1,5 @@
 //! Screen data for the lock list, formatted the same way as `repo-tweaks list`.
 
-use std::path::Path;
-
 use repo_tweaks_core::locks::{Lock, LockList, format_age, format_jst};
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -29,7 +27,8 @@ pub struct LockRow {
 }
 
 impl LockReport {
-    pub fn new(root: &str, locks: &LockList, now: OffsetDateTime, stale_days: u32) -> Self {
+    /// `name` is the repository's display name (`git::repo_name`: the remote's, not the folder's).
+    pub fn new(root: &str, name: String, locks: &LockList, now: OffsetDateTime, stale_days: u32) -> Self {
         let rows = |list: &[Lock]| {
             list.iter()
                 .map(|l| LockRow {
@@ -42,7 +41,6 @@ impl LockReport {
                 })
                 .collect()
         };
-        let name = Path::new(root).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| root.into());
         LockReport {
             root: root.into(),
             name,
@@ -67,8 +65,9 @@ mod tests {
                 "theirs":[{"id":"2","path":"Assets/Scenes/Main.unity","owner":{"name":"bob"},"locked_at":"2026-10-14T01:00:00Z"}]}"#,
         )
         .unwrap();
-        let report = LockReport::new("/work/game", &locks, datetime!(2026-10-18 18:30 UTC), 3);
+        let report = LockReport::new("/work/game-work2", "game".into(), &locks, datetime!(2026-10-18 18:30 UTC), 3);
         let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["root"], "/work/game-work2");
         assert_eq!(json["name"], "game");
         assert_eq!(json["staleDays"], 3);
         assert_eq!(json["staleCount"], 1);
