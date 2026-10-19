@@ -1,6 +1,6 @@
 //! Screen data for the lock list, formatted the same way as `repo-tweaks list`.
 
-use repo_tweaks_core::locks::{Lock, LockList, format_age, format_jst};
+use repo_tweaks_core::locks::{Lock, LockList, format_age, format_jst, stale_warning};
 use serde::Serialize;
 use time::OffsetDateTime;
 
@@ -11,6 +11,10 @@ pub struct LockReport {
     name: String,
     stale_days: u32,
     stale_count: usize,
+    /// The CLI's warning about stale locks, or None when there are none
+    stale_warning: Option<String>,
+    /// Japan time of this fetch, e.g. "10/19 18:50"
+    fetched_at: String,
     ours: Vec<LockRow>,
     theirs: Vec<LockRow>,
 }
@@ -41,11 +45,14 @@ impl LockReport {
                 })
                 .collect()
         };
+        let stale_count = locks.stale_count(now, stale_days);
         LockReport {
             root: root.into(),
             name,
             stale_days,
-            stale_count: locks.stale_count(now, stale_days),
+            stale_count,
+            stale_warning: (stale_count > 0).then(|| stale_warning(stale_days, stale_count)),
+            fetched_at: format_jst(now, now),
             ours: rows(&locks.ours),
             theirs: rows(&locks.theirs),
         }
@@ -71,6 +78,8 @@ mod tests {
         assert_eq!(json["name"], "game");
         assert_eq!(json["staleDays"], 3);
         assert_eq!(json["staleCount"], 1);
+        assert_eq!(json["staleWarning"], "3日以上ロックされたままのものが 1 件あります");
+        assert_eq!(json["fetchedAt"], "10/19 03:30");
         assert_eq!(json["ours"][0]["lockedAt"], "10/18 01:30");
         assert_eq!(json["ours"][0]["age"], "1日2時間");
         assert_eq!(json["ours"][0]["stale"], false);

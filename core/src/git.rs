@@ -4,9 +4,12 @@
 //! so values are read in as few calls as possible: one `git config` and one `git rev-parse`.
 
 use std::collections::HashMap;
+use std::io;
 use std::path::Path;
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 pub const KEY_SERVER: &str = "repo-tweaks.server";
 pub const KEY_TOKEN: &str = "repo-tweaks.token";
@@ -17,11 +20,20 @@ const KEY_USER: &str = "user.name";
 const KEY_REMOTE: &str = "remote.origin.url";
 
 static HIDE_CONSOLE: AtomicBool = AtomicBool::new(false);
+/// Seconds before a git process is stopped; 0 means no limit (the CLI).
+static TIMEOUT_SECS: AtomicU64 = AtomicU64::new(0);
 
 /// Stop each git process from flashing a console window on Windows (for the GUI; the CLI keeps
 /// its console so git can still ask for credentials there). No effect on other platforms.
 pub fn hide_console_windows() {
     HIDE_CONSOLE.store(true, Ordering::Relaxed);
+}
+
+/// For the GUI: stop any git process that runs longer than `limit`, together with what it started
+/// (git-lfs, ssh). Those processes also lose the terminal, so they fail instead of asking on it.
+/// The CLI does not call this: there, git may ask for a password and the user can press Ctrl+C.
+pub fn set_timeout(limit: Duration) {
+    TIMEOUT_SECS.store(limit.as_secs().max(1), Ordering::Relaxed);
 }
 
 fn command() -> Command {
@@ -30,37 +42,134 @@ fn command() -> Command {
     #[cfg(windows)]
     if HIDE_CONSOLE.load(Ordering::Relaxed) {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
     command
 }
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Run to the end, or stop the whole process tree when the GUI's time limit passes.
+fn exec(command: Command) -> io::Result<Output> {
+    match TIMEOUT_SECS.load(Ordering::Relaxed) {
+        0 => { command }.output(),
+        secs => exec_limited(command, secs),
+    }
+}
+
+fn exec_limited(mut command: Command, secs: u64) -> io::Result<Output> {
+    detach_from_terminal(&mut command);
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = command.spawn()?;
+    let pid = child.id();
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    match receiver.recv_timeout(Duration::from_secs(secs)) {
+        Ok(result) => result,
+        Err(_) => {
+            kill_tree(pid);
+            let message = format!(
+                "git が {secs} 秒たっても終わらないため止めました。ネットワークや、ログインの画面が出ていないかを確かめてください"
+            );
+            Err(io::Error::new(io::ErrorKind::TimedOut, message))
+        }
+    }
+}
+
+/// A new session has no controlling terminal, so ssh cannot stop to ask for a passphrase or a host key.
+#[cfg(unix)]
+fn detach_from_terminal(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: setsid is async-signal-safe, as pre_exec requires.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn detach_from_terminal(_command: &mut Command) {}
+
+/// The process was made a session (and group) leader, so the group id is its pid.
+#[cfg(unix)]
+fn kill_tree(pid: u32) {
+    // SAFETY: plain system call; a negative pid addresses the whole process group.
+    unsafe {
+        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+fn kill_tree(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    let _ = Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+#[cfg(not(any(unix, windows)))]
+fn kill_tree(_pid: u32) {}
+
 /// What it means when `git` cannot be started: it is not installed (or not on PATH).
 pub const GIT_MISSING: &str = "git が見つかりません。Git をインストールしてください";
 
-/// Like `output`, with a git that cannot be started turned into GIT_MISSING.
-pub fn run(args: &[&str]) -> Result<Output, String> {
-    output(args).map_err(|_| GIT_MISSING.to_string())
+/// A message for a git process that could not be run to the end.
+pub fn spawn_error(error: &io::Error) -> String {
+    match error.kind() {
+        io::ErrorKind::NotFound => GIT_MISSING.into(),
+        // exec's own message
+        io::ErrorKind::TimedOut => error.to_string(),
+        _ => format!("git を実行できませんでした（{error}）"),
+    }
 }
 
-/// Like `output_in`, with a git that cannot be started turned into GIT_MISSING.
-/// A missing `dir` also stops git from starting, so that is checked first and reported as such.
+/// Like `output`, with a failure to run git turned into a message.
+pub fn run(args: &[&str]) -> Result<Output, String> {
+    output(args).map_err(|e| spawn_error(&e))
+}
+
+/// Like `output_in`, with a failure to run git turned into a message.
+/// A folder that git cannot be started in is checked first, so it is not mistaken for a missing git.
 pub fn run_in(dir: &str, args: &[&str]) -> Result<Output, String> {
-    if !Path::new(dir).is_dir() {
-        return Err(format!("フォルダが見つかりません: {dir}"));
+    check_dir(dir)?;
+    output_in(dir, args).map_err(|e| match e.kind() {
+        io::ErrorKind::PermissionDenied => format!("フォルダを開けません（権限がありません）: {dir}"),
+        _ => spawn_error(&e),
+    })
+}
+
+fn check_dir(dir: &str) -> Result<(), String> {
+    match std::fs::metadata(dir) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(format!("フォルダではありません: {dir}")),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(format!("フォルダが見つかりません: {dir}")),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            Err(format!("フォルダを開けません（権限がありません）: {dir}"))
+        }
+        Err(e) => Err(format!("フォルダを開けません（{e}）: {dir}")),
     }
-    output_in(dir, args).map_err(|_| GIT_MISSING.to_string())
 }
 
 /// Run `git <args>` and return the raw output (for callers that need stderr).
-pub fn output(args: &[&str]) -> std::io::Result<Output> {
-    command().args(args).output()
+pub fn output(args: &[&str]) -> io::Result<Output> {
+    let mut command = command();
+    command.args(args);
+    exec(command)
 }
 
 /// Like `output`, but run in `dir` (e.g. the repository root, for root-relative paths).
-pub fn output_in(dir: &str, args: &[&str]) -> std::io::Result<Output> {
-    command().current_dir(dir).args(args).output()
+pub fn output_in(dir: &str, args: &[&str]) -> io::Result<Output> {
+    let mut command = command();
+    command.current_dir(dir).args(args);
+    exec(command)
 }
 
 /// Run `git <args>` in `dir` and return stdout, or None on any failure.
@@ -73,7 +182,7 @@ fn git(args: &[&str]) -> Option<String> {
     stdout(output(args))
 }
 
-fn stdout(output: std::io::Result<Output>) -> Option<String> {
+fn stdout(output: io::Result<Output>) -> Option<String> {
     let output = output.ok()?;
     if !output.status.success() {
         return None;
@@ -201,6 +310,54 @@ pub fn normalize_remote(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn time_limit_stops_the_whole_process_tree() {
+        let pid_file = std::env::temp_dir().join(format!("repo-tweaks-timeout-{}", std::process::id()));
+        let mut command = Command::new("sh");
+        // The shell stands in for git, the background sleep for git-lfs / ssh started by it.
+        command.args(["-c", &format!("sleep 30 & echo $! > {}; wait", pid_file.display())]);
+        let started = std::time::Instant::now();
+        let err = exec_limited(command, 1).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(err.to_string().contains("1 秒たっても終わらない"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let grandchild: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        std::fs::remove_file(&pid_file).ok();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!is_running(grandchild), "the background process was left running");
+    }
+
+    /// Killed processes may linger as zombies (state Z) until reaped, which `kill(pid, 0)` still sees.
+    #[cfg(unix)]
+    fn is_running(pid: i32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat.rsplit(')').next().and_then(|rest| rest.split_whitespace().next()) != Some("Z"),
+            Err(_) if Path::new("/proc/self").exists() => false,
+            // SAFETY: signal 0 only checks whether the process exists (macOS, which has no /proc).
+            Err(_) => (unsafe { libc::kill(pid, 0) }) == 0,
+        }
+    }
+
+    #[test]
+    fn finished_commands_keep_their_output() {
+        let mut command = Command::new("git");
+        command.arg("--version");
+        let output = exec_limited(command, 30).unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).starts_with("git version"));
+    }
+
+    #[test]
+    fn missing_or_wrong_folders_are_named() {
+        let missing = std::env::temp_dir().join("repo-tweaks-missing").join(std::process::id().to_string());
+        let missing = missing.to_str().unwrap();
+        assert_eq!(run_in(missing, &["status"]).unwrap_err(), format!("フォルダが見つかりません: {missing}"));
+        let file = std::env::current_exe().unwrap();
+        let file = file.to_str().unwrap();
+        assert_eq!(run_in(file, &["status"]).unwrap_err(), format!("フォルダではありません: {file}"));
+    }
 
     #[test]
     fn remote_urls_are_normalized() {

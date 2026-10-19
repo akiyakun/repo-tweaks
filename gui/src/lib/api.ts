@@ -18,6 +18,10 @@ export type LockReport = {
   name: string;
   staleDays: number;
   staleCount: number;
+  /** The CLI's warning about stale locks, or null when there are none */
+  staleWarning: string | null;
+  /** Japan time of this fetch, e.g. "10/19 18:50" */
+  fetchedAt: string;
   ours: LockRow[];
   theirs: LockRow[];
 };

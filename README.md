@@ -273,7 +273,7 @@ Tauri v2 + React + TypeScript + Tailwind CSS で作っています。Rust 側は
 - 「フォルダを開く」でリポジトリのフォルダを選ぶと、自分のロック / 他人のロックを表示します。古いロックには印が付き、件数の警告も出ます（日数は `repo-tweaks.staleDays`、既定 3 日）。
 - 最後に開けたフォルダは、次の起動時に自動で開きます。
 - 見出しのリポジトリ名は、remote（`github.com/example-org/game` なら `game`）から取ります。フォルダ名が違っても、CLI や Discord と同じ名前になります。
-- 一覧の取得は 60 秒で打ち切ります。更新に失敗したときは、エラーと一緒に直前の一覧を残します。
+- git が 60 秒たっても終わらないときは、git が起動した git-lfs や ssh ごと止めます。更新に失敗したときは、エラーと一緒に直前の一覧を残します。
 - 更新はボタンか、`Ctrl+R` / `⌘R` / `F5` です。
 - 起動時の引数でフォルダを渡せます（`repo-tweaks-gui /path/to/repo`）。Fork のカスタムコマンドから開くときに使えます。
 
@@ -288,7 +288,7 @@ npm run tauri dev      # 開発用（画面の変更がすぐに反映される�
 npm run tauri build    # 配布用（Windows は .msi / .exe、Mac は .app / .dmg）
 ```
 
-- Mac で Finder から起動したアプリは `PATH` が短く、Homebrew の git-lfs が見つかりません。GUI は起動時に `/opt/homebrew/bin`・`/usr/local/bin`・`/opt/local/bin` を `PATH` に足します。
+- Mac で Finder から起動したアプリは `PATH` が短く、Homebrew の git-lfs が見つかりません。GUI は起動時に `/opt/homebrew/bin`・`/usr/local/bin`・`/opt/local/bin` を `PATH` の先頭に足します（端末と同じ git を使うため）。
 - Windows では、git を呼ぶたびにコンソールの窓が出ないようにしています。
 
 ## Discord への通知

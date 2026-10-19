@@ -340,7 +340,7 @@ fn run_lock(ctx: &RepoContext, paths: &[&str]) -> HashMap<String, Outcome> {
     let mut args = vec!["lfs", "lock", "--json"];
     args.extend(paths);
     match git::output_in(&ctx.root, &args) {
-        Err(_) => all_failed(paths, git::GIT_MISSING),
+        Err(e) => all_failed(paths, &git::spawn_error(&e)),
         Ok(out) => lock_results(paths, &String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr)),
     }
 }
@@ -388,7 +388,7 @@ fn run_unlock(ctx: &RepoContext, paths: &[&str], force: bool) -> HashMap<String,
     }
     args.extend(paths);
     match git::output_in(&ctx.root, &args) {
-        Err(_) => all_failed(paths, git::GIT_MISSING),
+        Err(e) => all_failed(paths, &git::spawn_error(&e)),
         Ok(out) => unlock_results(paths, &String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr)),
     }
 }
@@ -402,7 +402,7 @@ fn run_unlock(ctx: &RepoContext, paths: &[&str], force: bool) -> HashMap<String,
 /// refusing, the explained error tells the user to commit or discard the changes.
 fn unlock_own_by_id(ctx: &RepoContext, id: &str) -> Outcome {
     match git::output_in(&ctx.root, &["lfs", "unlock", "--json", "--id", id]) {
-        Err(_) => Outcome::Failed(git::GIT_MISSING.into()),
+        Err(e) => Outcome::Failed(git::spawn_error(&e)),
         Ok(out) => unlock_by_id_result(&String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr)),
     }
 }

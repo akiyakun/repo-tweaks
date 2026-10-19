@@ -24,52 +24,26 @@ function saveLastFolder(dir: string) {
   }
 }
 
-// git lfs may wait on the network (or a credential prompt) for a long time; give up on it after this.
-const TIMEOUT_MS = 60_000;
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(`${ms / 1000} 秒たっても応答がありません。ネットワークやログインを確かめて、もう一度更新してください`),
-      ms,
-    );
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    );
-  });
-}
-
-function formatTime(at: Date): string {
-  return at.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
-}
-
 export function App() {
-  // Null until the start-up folder is known, so nothing is fetched for a folder that is not shown.
+  // False until the start-up folder is known: the welcome screen waits, so it does not flash.
   const [ready, setReady] = useState(false);
   const [dir, setDir] = useState<string | null>(null);
   const [report, setReport] = useState<LockReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [fetchedAt, setFetchedAt] = useState<Date | null>(null);
   // Ignore answers to older requests when the folder changes while one is in flight.
+  // (The Rust side runs git lfs one call at a time and stops a hung git after 60 seconds.)
   const requestId = useRef(0);
+  const started = useRef(false);
 
   const refresh = useCallback(async (target: string) => {
     const id = ++requestId.current;
     setLoading(true);
     try {
-      const result = await withTimeout(listLocks(target), TIMEOUT_MS);
+      const result = await listLocks(target);
       if (id !== requestId.current) return;
       setReport(result);
       setError(null);
-      setFetchedAt(new Date());
       // Remember only folders that opened, so a mistyped one is not reopened next time.
       saveLastFolder(target);
     } catch (e) {
@@ -85,21 +59,23 @@ export function App() {
     (target: string) => {
       setReport(null);
       setError(null);
-      setFetchedAt(null);
       setDir(target);
       void refresh(target);
     },
     [refresh],
   );
 
-  // A folder given on the command line wins over the remembered one.
+  // A folder given on the command line wins over the remembered one. Once only (React runs effects
+  // twice in development), and not when the user has already opened a folder in the meantime.
   useEffect(() => {
+    if (started.current) return;
+    started.current = true;
     void initialFolder()
       .catch(() => null)
       .then((arg) => {
         setReady(true);
         const start = arg ?? loadLastFolder();
-        if (start) openFolder(start);
+        if (start && requestId.current === 0) openFolder(start);
       });
   }, [openFolder]);
 
@@ -132,11 +108,7 @@ export function App() {
             {report?.root ?? dir ?? "フォルダが選ばれていません"}
           </div>
         </div>
-        {fetchedAt && (
-          <span className="hidden text-xs text-zinc-500 sm:inline">
-            {formatTime(fetchedAt)} に更新
-          </span>
-        )}
+        {report && <span className="hidden text-xs text-zinc-500 sm:inline">{report.fetchedAt} に更新</span>}
         <Button
           variant="ghost"
           size="icon"
@@ -159,16 +131,16 @@ export function App() {
           {error && (
             <ErrorBox
               message={error}
-              note={report && fetchedAt ? `${formatTime(fetchedAt)} に取得した一覧を表示しています` : undefined}
+              note={report ? `${report.fetchedAt} に取得した一覧を表示しています` : undefined}
             />
           )}
           {dir && !report && !error && loading && <Loading />}
           {report && (
             <div className={cn("flex flex-col gap-5 transition-opacity", loading && "opacity-60")}>
-              {report.staleCount > 0 && (
+              {report.staleWarning && (
                 <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
                   <AlertTriangle className="size-4 shrink-0" />
-                  {report.staleDays}日以上ロックされたままのものが {report.staleCount} 件あります
+                  {report.staleWarning}
                 </div>
               )}
               <LockSection

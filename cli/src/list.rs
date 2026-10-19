@@ -8,7 +8,9 @@ use repo_tweaks_core::git::{GitConfig, KEY_STALE_DAYS};
 use repo_tweaks_core::lfs;
 
 use crate::text::pad;
-use repo_tweaks_core::locks::{Lock, LockList, format_age, format_jst, format_rfc3339, resolve_stale_days};
+use repo_tweaks_core::locks::{
+    Lock, LockList, format_age, format_jst, format_rfc3339, resolve_stale_days, stale_warning,
+};
 
 pub fn run(config: &GitConfig, json: bool, stale_days: Option<u32>) -> Result<(), String> {
     let stale_days = resolve_stale_days(stale_days, config.get(KEY_STALE_DAYS))?;
@@ -35,7 +37,7 @@ fn render(locks: &LockList, now: OffsetDateTime, stale_days: u32) -> String {
     section(&mut out, "他人のロック", &locks.theirs, true, path_width, now, stale_days);
     let stale = locks.stale_count(now, stale_days);
     if stale > 0 {
-        out.push_str(&format!("\n⚠ {stale_days}日以上ロックされたままのものが {stale} 件あります\n"));
+        out.push_str(&format!("\n⚠ {}\n", stale_warning(stale_days, stale)));
     }
     out
 }

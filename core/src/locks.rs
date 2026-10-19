@@ -24,6 +24,11 @@ pub fn resolve_stale_days(flag: Option<u32>, configured: Option<String>) -> Resu
         .ok_or_else(|| format!("{source} は 1〜{MAX_STALE_DAYS} の整数にしてください"))
 }
 
+/// "3日以上ロックされたままのものが 2 件あります" (shared by the CLI and the GUI)
+pub fn stale_warning(stale_days: u32, count: usize) -> String {
+    format!("{stale_days}日以上ロックされたままのものが {count} 件あります")
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lock {
     pub id: String,

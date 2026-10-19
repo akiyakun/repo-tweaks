@@ -58,10 +58,12 @@ repo-tweaks/
 - ロジックは core に置き、CLI は表示と引数だけにする（GUI・Unity からも使うため）。
 - GUI は CLI を呼ばず、core を直接使う。core の関数はカレントディレクトリを相手にするので、GUI 用に `GitConfig::read_in` / `RepoContext::open` / `lfs::fetch_locks_in` のようにフォルダを受け取る版を足す（GUI でカレントディレクトリを変えない。スレッドをまたいで共有されるため）。
 - GUI の見出しのリポジトリ名は `git::repo_name`（remote の名前を優先、無ければフォルダ名）。CLI・サーバーと同じ名前にする。
-- `git::run_in` は、フォルダが無いときに「git が見つかりません」ではなく「フォルダが見つかりません」を返す。`RepoContext` の rev-parse が失敗したときは、git の理由の行を添える（NAS 上の `dubious ownership` には `safe.directory` の案内）。
-- GUI は起動時に `GIT_TERMINAL_PROMPT=0` を設定する（端末で認証を聞かれて止まらないように）。一覧の取得は 60 秒で打ち切り、更新に失敗しても直前の一覧は残す。最後に開いたフォルダは、開けたときだけ覚える。
+- `git::run_in` は、git を起動する前にフォルダを確かめる（無い・フォルダでない・権限が無いを、「git が見つかりません」と取り違えない）。`RepoContext` の rev-parse が失敗したときは、git の理由の行（`fatal:` の行を優先）を添える（NAS 上の `dubious ownership` には `safe.directory` の案内）。
+- GUI は起動時に `git::set_timeout(60 秒)` を呼ぶ。1つの git が 60 秒を超えたら、git が起動したもの（git-lfs・ssh）ごと止める（Unix は setsid で新しいセッションにしてプロセスグループごと、Windows は `taskkill /T`）。setsid で端末から切り離すので、ssh もパスフレーズやホスト鍵を端末で聞かずに失敗する。CLI では呼ばない（端末で認証を聞けるように）。
+- GUI は `GIT_TERMINAL_PROMPT=0` も設定する。git lfs の呼び出しは GUI 全体で1本ずつ（Rust 側の Mutex）。更新に失敗しても直前の一覧は残す。最後に開いたフォルダは、開けたときだけ覚える。起動時の最初の取得は1回だけ（開発時の StrictMode でも）。
+- GUI の「N日以上ロックされたまま」の文は core の `locks::stale_warning`、更新の時刻も Rust 側の format_jst（日本時間）で作る。
 - GUI の表示用の文字列（日本時間・経過時間・古さ）は Rust 側（gui/src-tauri/src/view.rs）で core の format_jst / format_age を使って作り、CLI と同じ言い回しにする。
-- GUI は起動時に `git::hide_console_windows()` を呼ぶ（Windows で git の窓を出さない。CLI では呼ばない。端末で認証を聞けるようにするため）。Mac では起動時に Homebrew などの bin を PATH に足す。
+- GUI は起動時に `git::hide_console_windows()` を呼ぶ（Windows で git の窓を出さない。CLI では呼ばない。端末で認証を聞けるようにするため）。Mac では起動時に Homebrew などの bin を PATH の先頭に足す（端末と同じ git を使う）。
 - `gui/src-tauri` は workspace の外（`exclude`）で、Cargo.lock も別。ルートの `cargo test` には入らない。
 - `.gitignore` の Python 用の `lib/` が `gui/src/lib` を隠すので、`!gui/src/lib/` で戻している。
 - サーバーの security.py / settings.py / notify.py と admin.py のログイン・CSRF・ヘッダーの処理は、cloud-drive-sync の `cds_admin` の写し。安全のための修正をしたら、もう片方にも入れるよう利用者に伝える（このリポジトリで足した修正：フォームの大きさの上限、Origin はホスト名とポートで比較、scrypt を別スレッドで実行、ロックの通知を応答のあとに送る、壊れた admin.json で 500 にしない）。

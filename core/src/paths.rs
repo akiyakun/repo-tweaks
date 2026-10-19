@@ -65,7 +65,9 @@ impl RepoContext {
 /// `not_a_repo` alone for the usual "not a git repository", otherwise with git's reason
 /// (e.g. `safe.directory` for a repository on a network share owned by another user).
 fn not_a_repo_error(not_a_repo: &str, stderr: &str) -> String {
-    let line = stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    // Prefer the fatal line: warnings (e.g. about safe.directory entries) may come first
+    let lines = || stderr.lines().map(str::trim).filter(|l| !l.is_empty());
+    let line = lines().find(|l| l.starts_with("fatal:")).or_else(|| lines().next()).unwrap_or("");
     if line.is_empty() || line.to_ascii_lowercase().contains("not a git repository") {
         return not_a_repo.into();
     }
@@ -168,6 +170,11 @@ mod tests {
         assert!(err.contains("safe.directory"), "{err}");
         assert!(err.contains("dubious ownership"), "{err}");
         assert!(not_a_repo_error(PLAIN, "fatal: something else\n").contains("something else"));
+        // Git for Windows warns about old-style UNC entries before the real reason
+        let warned = format!("warning: encountered old-style '//nas/share/game' that should be '%(prefix)///nas/share/game'\n{dubious}");
+        assert!(not_a_repo_error(PLAIN, &warned).contains("safe.directory"));
+        let warned_plain = format!("warning: something\n{usual}");
+        assert_eq!(not_a_repo_error(PLAIN, &warned_plain), PLAIN);
     }
 
     #[test]

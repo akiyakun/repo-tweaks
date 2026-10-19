@@ -10,9 +10,7 @@ use crate::locks::{parse_verify_json, LockList};
 use crate::paths::RepoContext;
 
 pub fn fetch_locks(config: &GitConfig) -> Result<LockList, String> {
-    RepoContext::current()?;
-    require_remote(config)?;
-    query_locks()
+    fetch_locks_in(&RepoContext::current()?, config)
 }
 
 /// Like `fetch_locks`, for a repository the GUI opened. `config` must be read there too (`GitConfig::read_in`).
