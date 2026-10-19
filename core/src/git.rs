@@ -15,6 +15,19 @@ pub const KEY_NOTIFY: &str = "repo-tweaks.notify";
 const KEY_USER: &str = "user.name";
 const KEY_REMOTE: &str = "remote.origin.url";
 
+/// What it means when `git` cannot be started: it is not installed (or not on PATH).
+pub const GIT_MISSING: &str = "git が見つかりません。Git をインストールしてください";
+
+/// Like `output`, with a git that cannot be started turned into GIT_MISSING.
+pub fn run(args: &[&str]) -> Result<Output, String> {
+    output(args).map_err(|_| GIT_MISSING.to_string())
+}
+
+/// Like `output_in`, with a git that cannot be started turned into GIT_MISSING.
+pub fn run_in(dir: &str, args: &[&str]) -> Result<Output, String> {
+    output_in(dir, args).map_err(|_| GIT_MISSING.to_string())
+}
+
 /// Run `git <args>` and return the raw output (for callers that need stderr).
 pub fn output(args: &[&str]) -> std::io::Result<Output> {
     Command::new("git").args(args).output()

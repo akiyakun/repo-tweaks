@@ -14,8 +14,7 @@ pub struct RepoContext {
 
 impl RepoContext {
     pub fn current() -> Result<Self, String> {
-        let output = git::output(&["rev-parse", "--show-toplevel", "--show-prefix"])
-            .map_err(|_| "git が見つかりません。Git をインストールしてください".to_string())?;
+        let output = git::run(&["rev-parse", "--show-toplevel", "--show-prefix"])?;
         if !output.status.success() {
             return Err("Git のリポジトリの中で実行してください".into());
         }

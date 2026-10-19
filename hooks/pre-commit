@@ -1,0 +1,26 @@
+#!/bin/sh
+# pre-commit hook for repo-tweaks.
+#
+# Stops the commit when it changes or deletes a file marked `lockable` in .gitattributes
+# that you have not locked (`repo-tweaks lock <path>`). New files need no lock.
+# If the locks cannot be checked (offline etc.), it only warns and lets the commit through.
+
+# GUI clients (Fork etc.) may not have ~/.cargo/bin on PATH, so fall back to it (.exe on Windows).
+RT="$(command -v repo-tweaks 2>/dev/null)"
+if [ -z "$RT" ]; then
+  for c in "$HOME/.cargo/bin/repo-tweaks" "$HOME/.cargo/bin/repo-tweaks.exe"; do
+    if [ -x "$c" ]; then RT="$c"; break; fi
+  done
+fi
+if [ -z "$RT" ]; then
+  echo "repo-tweaks: コマンドが見つからないため、ロックを確かめずにコミットします" >&2
+  exit 0
+fi
+"$RT" check
+status=$?
+# 1 = blocked. Anything else (e.g. an old repo-tweaks without `check`) must not stop commits.
+if [ "$status" -eq 1 ]; then exit 1; fi
+if [ "$status" -ne 0 ]; then
+  echo "repo-tweaks: ロックを確かめられなかったため、確かめずにコミットします（repo-tweaks check が終了コード $status で終わりました。repo-tweaks が古いかもしれません）" >&2
+fi
+exit 0

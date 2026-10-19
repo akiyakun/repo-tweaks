@@ -139,17 +139,38 @@ fn collect(paths: Vec<String>, with_meta: bool, include_pair: impl Fn(&str) -> b
 
 /// Lock state of a path. Exact match first, then ignoring case (a lock taken under another spelling).
 fn find(locks: &LockList, path: &str) -> Option<State> {
-    let lower = path.to_lowercase();
-    for exact in [true, false] {
-        let hit = |l: &&Lock| if exact { l.path == path } else { l.path.to_lowercase() == lower };
-        if let Some(lock) = locks.ours.iter().find(hit) {
-            return Some(State::Ours(lock.clone()));
+    LockIndex::new(locks).get(path)
+}
+
+/// Looks up the lock on many paths at once (`status` / `check` ask for every lockable file).
+///
+/// Same rules as one lookup: the exact spelling first, then ignoring case; ours before theirs;
+/// the oldest lock when several match.
+pub struct LockIndex<'a> {
+    exact: HashMap<&'a str, (&'a Lock, bool)>,
+    folded: HashMap<String, (&'a Lock, bool)>,
+}
+
+impl<'a> LockIndex<'a> {
+    pub fn new(locks: &'a LockList) -> Self {
+        let mut index = LockIndex { exact: HashMap::new(), folded: HashMap::new() };
+        let all = locks.ours.iter().map(|l| (l, true)).chain(locks.theirs.iter().map(|l| (l, false)));
+        for (lock, ours) in all {
+            index.exact.entry(lock.path.as_str()).or_insert((lock, ours));
+            index.folded.entry(lock.path.to_lowercase()).or_insert((lock, ours));
         }
-        if let Some(lock) = locks.theirs.iter().find(hit) {
-            return Some(State::Theirs(lock.clone()));
-        }
+        index
     }
-    None
+
+    pub fn get(&self, path: &str) -> Option<State> {
+        let hit = self.exact.get(path).or_else(|| self.folded.get(&path.to_lowercase()));
+        hit.map(|&(lock, ours)| if ours { State::Ours(lock.clone()) } else { State::Theirs(lock.clone()) })
+    }
+
+    /// Free when nobody holds it
+    pub fn state(&self, path: &str) -> State {
+        self.get(path).unwrap_or(State::Free)
+    }
 }
 
 fn with_state(targets: Vec<(String, Option<String>)>, locks: &LockList) -> Vec<Target> {
@@ -319,7 +340,7 @@ fn run_lock(ctx: &RepoContext, paths: &[&str]) -> HashMap<String, Outcome> {
     let mut args = vec!["lfs", "lock", "--json"];
     args.extend(paths);
     match git::output_in(&ctx.root, &args) {
-        Err(_) => all_failed(paths, "git が見つかりません"),
+        Err(_) => all_failed(paths, git::GIT_MISSING),
         Ok(out) => lock_results(paths, &String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr)),
     }
 }
@@ -367,7 +388,7 @@ fn run_unlock(ctx: &RepoContext, paths: &[&str], force: bool) -> HashMap<String,
     }
     args.extend(paths);
     match git::output_in(&ctx.root, &args) {
-        Err(_) => all_failed(paths, "git が見つかりません"),
+        Err(_) => all_failed(paths, git::GIT_MISSING),
         Ok(out) => unlock_results(paths, &String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr)),
     }
 }
@@ -381,7 +402,7 @@ fn run_unlock(ctx: &RepoContext, paths: &[&str], force: bool) -> HashMap<String,
 /// refusing, the explained error tells the user to commit or discard the changes.
 fn unlock_own_by_id(ctx: &RepoContext, id: &str) -> Outcome {
     match git::output_in(&ctx.root, &["lfs", "unlock", "--json", "--id", id]) {
-        Err(_) => Outcome::Failed("git が見つかりません".into()),
+        Err(_) => Outcome::Failed(git::GIT_MISSING.into()),
         Ok(out) => unlock_by_id_result(&String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr)),
     }
 }
