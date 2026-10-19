@@ -14,7 +14,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
 - 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）、Step 5（サーバーによる定期的な照合と滞留の警告。GitHub のみ）、Step 6（`.gitattributes` の lockable を対象に、`status` / pre-commit の `check` / `install-hooks`。実機の確認待ち）。
-- GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）を作成。Mac / Windows の実機では未確認。
+- GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）。Mac / Windows で確認済み。
 - 次の候補は、Unity 拡張（HANDOFF のフェーズ 2。ロックしていない lockable のアセットを `IsOpenForEdit` でグレーアウトし、ロック・解除のボタンを付ける）、GitLab への照合の対応。通知先は Discord（Slack は後回し）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
@@ -30,6 +30,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 - サーバー 0.2.0 は NAS の Docker で動き、Mac のブラウザから管理画面に入れる。Discord の Webhook へのテスト送信、CLI の `ping` も成功（2026-10-18 確認）。
 - サーバー 0.4.1 は NAS から GitHub の LFS ロック API に届き、照合が動く。Fork で取ったロックは「確認待ち」になり、約 2 分後に「ロックを見つけました」が Discord に届く（2026-10-18 確認）。
 - 照合のトークンは、Fine-grained トークン（対象のリポジトリだけ、Contents: Read-only）で足りる（2026-10-18 確認）。
+- GUI Step 0 は Mac と Windows の両方でロック一覧を表示できる（別アカウントのロックは「他人のロック」に出る）。Windows で更新してもコンソールの窓は出ない。Mac で Finder から起動しても git-lfs が見つかる。メモリは Mac（開発モード）で本体と WebKit のプロセスの合計が約 112MB、Windows で本体と WebView2 の合計が約 66MB（2026-10-19 確認）。
 
 ## 言語・書き方
 
