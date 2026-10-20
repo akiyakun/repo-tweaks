@@ -296,6 +296,23 @@ npm run tauri build    # 配布用（Windows は .msi / .exe、Mac は .app / .d
 - Mac で Finder から起動したアプリは `PATH` が短く、Homebrew の git-lfs が見つかりません。GUI は起動時に `/opt/homebrew/bin`・`/usr/local/bin`・`/opt/local/bin` を `PATH` の先頭に足します（端末と同じ git を使うため）。
 - Windows では、git を呼ぶたびにコンソールの窓が出ないようにしています。
 
+### 初期状態に戻す
+
+GUI が覚えているのは「最後に開いたフォルダ」だけです（WebView の保存領域）。アプリを終了してから、次のフォルダを消します。
+
+```bash
+# Mac（com.example.repo-tweaks はビルドした .app、repo-tweaks-gui は npm run tauri dev のとき）
+rm -rf ~/Library/WebKit/com.example.repo-tweaks ~/Library/WebKit/repo-tweaks-gui \
+       ~/Library/Caches/com.example.repo-tweaks ~/Library/Caches/repo-tweaks-gui
+```
+
+```powershell
+# Windows
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\com.example.repo-tweaks"
+```
+
+アプリの ID（`tauri.conf.json` の `identifier`）を変えると、フォルダの名前も変わります。
+
 ## Discord への通知
 
 `repo-tweaks lock` / `unlock` が成功すると、CLI がサーバーへ送り、サーバーが Discord に投稿します（1回の操作で1メッセージ。`.meta` は、元のファイルと持ち主が同じなら、その行にまとめます）。
