@@ -394,7 +394,7 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\com.example.repo-tweaks"
 
 ```bash
 cargo test
-cd gui && npm run build && (cd src-tauri && cargo test)
+cd gui && npm test && npm run build && (cd src-tauri && cargo test)   # GUI（画面のテストは Vitest）
 cd server && python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python -m unittest discover -s tests -v
 ```

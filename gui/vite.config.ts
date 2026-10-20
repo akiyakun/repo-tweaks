@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { fileURLToPath, URL } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
@@ -17,5 +18,10 @@ export default defineConfig({
   },
   build: {
     target: "es2022",
+  },
+  // `npm test`: the screen runs in jsdom, with the Rust side replaced by @tauri-apps/api/mocks
+  test: {
+    environment: "jsdom",
+    setupFiles: ["src/test/setup.ts"],
   },
 });

@@ -5,12 +5,14 @@
 
 mod view;
 
+use std::ffi::OsString;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use repo_tweaks_core::git::{self, GitConfig, KEY_STALE_DAYS};
 use repo_tweaks_core::lfs;
-use repo_tweaks_core::locks::resolve_stale_days;
+use repo_tweaks_core::locks::{Lock, resolve_stale_days};
 use repo_tweaks_core::notify::{self, Notified};
 use repo_tweaks_core::ops::{self, Outcome, Target};
 use repo_tweaks_core::paths::RepoContext;
@@ -92,25 +94,37 @@ async fn unlock_files(root: String, paths: Vec<String>, force: bool, confirmed: 
         let config = GitConfig::read_in(&ctx.root);
         let root = ctx.root.clone();
         let plan = ops::plan_unlock_in(ctx, &config, &paths, true, force)?;
-        if plan.others_locks().iter().any(|l| !confirmed.contains(&l.id)) {
-            return Err("確認したあとにロックの状態が変わりました。一覧を更新して、もう一度やり直してください（何も変更していません）".into());
-        }
+        only_confirmed(&plan.others_locks(), &confirmed)?;
         Ok(report(&root, &config, &plan.unlock()))
     })
     .await
 }
 
+/// Refuse when the plan would remove someone else's lock the user did not see in the confirmation
+/// (taken or changed since): nothing has been changed yet at this point.
+fn only_confirmed(others: &[&Lock], confirmed: &[String]) -> Result<(), String> {
+    if others.iter().any(|l| !confirmed.contains(&l.id)) {
+        return Err("確認したあとにロックの状態が変わりました。一覧を更新して、もう一度やり直してください（何も変更していません）".into());
+    }
+    Ok(())
+}
+
 /// The first of `paths` that is a folder (for a drag and drop onto the window).
 #[tauri::command]
 fn dropped_folder(paths: Vec<String>) -> Option<String> {
-    paths.into_iter().find(|p| std::path::Path::new(p).is_dir())
+    paths.into_iter().find(|p| Path::new(p).is_dir())
 }
 
-/// A folder given on the command line (`repo-tweaks-gui <folder>`, e.g. from a Fork custom command),
-/// made absolute so that it still means the same folder when remembered for the next start.
+/// A folder given on the command line (`repo-tweaks-gui <folder>`, e.g. from a Fork custom command).
 #[tauri::command]
 fn initial_folder() -> Option<String> {
-    let arg = std::env::args_os().nth(1)?;
+    folder_arg(std::env::args_os().nth(1))
+}
+
+/// Made absolute, so that it still means the same folder when remembered for the next start.
+/// Options (such as macOS's `-psn_...`) are not folders.
+fn folder_arg(arg: Option<OsString>) -> Option<String> {
+    let arg = arg?;
     if arg.to_string_lossy().starts_with('-') {
         return None;
     }
@@ -159,4 +173,47 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("repo-tweaks の起動に失敗しました");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::macros::datetime;
+
+    fn lock(id: &str) -> Lock {
+        Lock { id: id.into(), path: format!("{id}.psd"), owner: "bob".into(), locked_at: datetime!(2026-10-15 11:01 UTC) }
+    }
+
+    #[test]
+    fn forced_unlock_needs_every_lock_confirmed() {
+        let (a, b) = (lock("3"), lock("4"));
+        assert!(only_confirmed(&[&a, &b], &["3".into(), "4".into()]).is_ok());
+        // Nothing of someone else's to remove (our own lock by ID): nothing to confirm
+        assert!(only_confirmed(&[], &[]).is_ok());
+        // A lock that appeared after the confirmation (e.g. someone took the .meta meanwhile)
+        let err = only_confirmed(&[&a, &b], &["3".into()]).unwrap_err();
+        assert!(err.contains("何も変更していません"), "{err}");
+        // Confirmed more than is left (one was released meanwhile): fine
+        assert!(only_confirmed(&[&a], &["3".into(), "4".into()]).is_ok());
+    }
+
+    #[test]
+    fn command_line_folder_is_made_absolute() {
+        let relative = Path::new("Projects").join("game");
+        let expected = std::env::current_dir().unwrap().join(&relative);
+        assert_eq!(folder_arg(Some(relative.into())), Some(expected.to_string_lossy().into_owned()));
+        let abs = std::env::temp_dir().to_string_lossy().into_owned();
+        assert_eq!(folder_arg(Some(abs.clone().into())), Some(abs));
+        assert_eq!(folder_arg(Some("-psn_0_12345".into())), None);
+        assert_eq!(folder_arg(None), None);
+    }
+
+    #[test]
+    fn dropped_folder_skips_files() {
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        let file = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        assert_eq!(dropped_folder(vec![file.clone(), dir.clone()]), Some(dir));
+        assert_eq!(dropped_folder(vec![file]), None);
+        assert_eq!(dropped_folder(vec![]), None);
+    }
 }

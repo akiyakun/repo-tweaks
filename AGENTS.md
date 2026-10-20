@@ -17,6 +17,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 - GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）。Mac / Windows で確認済み。Step 1（ロック・解除・強制解除、フォルダのドラッグ＆ドロップ）。Mac / Windows で確認済み。Step 2（ロック・解除をサーバー → Discord に通知。CLI の通知の処理を core へ移す）。Windows で通知が届くのを確認。.meta と元のファイルをそろえて扱う修正（CLI も）は実機では未確認。
 - 次の候補は、Unity 拡張（HANDOFF のフェーズ 2。ロックしていない lockable のアセットを `IsOpenForEdit` でグレーアウトし、ロック・解除のボタンを付ける）、GitLab への照合の対応。通知先は Discord（Slack は後回し）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
+- TODO（リリースが近づいたら）：GUI を本物のアプリのまま動かすテスト（tauri-driver / WebDriver）。tauri-driver は Windows / Linux のみ（macOS は非対応）。今は画面のテスト（Vitest）と、手での実機確認で補う。
 
 ## 実機で確かめたこと（GitHub、Mac / Windows）
 
@@ -68,6 +69,7 @@ repo-tweaks/
 - GUI の「N日以上ロックされたまま」の文は core の `locks::stale_warning`、更新の時刻も Rust 側の format_jst（日本時間）で作る。
 - GUI の表示用の文字列（日本時間・経過時間・古さ）は Rust 側（gui/src-tauri/src/view.rs）で core の format_jst / format_age を使って作り、CLI と同じ言い回しにする。
 - GUI は起動時に `git::hide_console_windows()` を呼ぶ（Windows で git の窓を出さない。CLI では呼ばない。端末で認証を聞けるようにするため）。Mac では起動時に Homebrew などの bin を PATH の先頭に足す（端末と同じ git を使う）。
+- GUI の画面のテストは Vitest + Testing Library（jsdom）。Rust 側は `@tauri-apps/api/mocks` の `mockIPC` で差し替える（`gui/src/test/backend.ts` の `fakeBackend`。ハンドラーの無いコマンドはテストを落とす。エラーは文字列で reject する。Tauri が Rust の Err(String) をそう渡すため）。ドラッグ＆ドロップは `shouldMockEvents` で `tauri://drag-drop` を流す。main.tsx と同じく StrictMode で描く。GUI の Rust 側のコマンドは、判定を関数に切り出してテストする（`only_confirmed` / `folder_arg` など）。
 - `gui/src-tauri` は workspace の外（`exclude`）で、Cargo.lock も別。ルートの `cargo test` には入らない。
 - `.gitignore` の Python 用の `lib/` が `gui/src/lib` を隠すので、`!gui/src/lib/` で戻している。
 - サーバーの security.py / settings.py / notify.py と admin.py のログイン・CSRF・ヘッダーの処理は、cloud-drive-sync の `cds_admin` の写し。安全のための修正をしたら、もう片方にも入れるよう利用者に伝える（このリポジトリで足した修正：フォームの大きさの上限、Origin はホスト名とポートで比較、scrypt を別スレッドで実行、ロックの通知を応答のあとに送る、壊れた admin.json で 500 にしない）。
@@ -120,7 +122,7 @@ repo-tweaks/
 
 ```bash
 cargo test
-cd gui && npm run build && (cd src-tauri && cargo test)
+cd gui && npm test && npm run build && (cd src-tauri && cargo test)
 cd gui && npm run tauri dev   # GUI を開発モードで起動
 cd server && .venv/bin/python -m unittest discover -s tests -v
 cd server && docker compose up -d --build   # .env が必要（.env.example をコピー）
