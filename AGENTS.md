@@ -14,7 +14,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
 - 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）、Step 5（サーバーによる定期的な照合と滞留の警告。GitHub のみ）、Step 6（`.gitattributes` の lockable を対象に、`status` / pre-commit の `check` / `install-hooks`。実機の確認待ち）。
-- GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）。Mac / Windows で確認済み。Step 1（ロック・解除・強制解除、フォルダのドラッグ＆ドロップ）。Mac / Windows で確認済み。Step 2（ロック・解除をサーバー → Discord に通知。CLI の通知の処理を core へ移す）。Windows で通知が届くのを確認。.meta と元のファイルをそろえて扱う修正（CLI も）は実機では未確認。
+- GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）。Mac / Windows で確認済み。Step 1（ロック・解除・強制解除、フォルダのドラッグ＆ドロップ）。Mac / Windows で確認済み。Step 2（ロック・解除をサーバー → Discord に通知。CLI の通知の処理を core へ移す）。Windows で通知が届くのを確認。.meta と元のファイルをそろえて扱う修正も Mac / Windows で確認済み。
 - 次の候補は、Unity 拡張（HANDOFF のフェーズ 2。ロックしていない lockable のアセットを `IsOpenForEdit` でグレーアウトし、ロック・解除のボタンを付ける）、GitLab への照合の対応。通知先は Discord（Slack は後回し）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 - TODO（リリースが近づいたら）：GUI を本物のアプリのまま動かすテスト（tauri-driver / WebDriver）。tauri-driver は Windows / Linux のみ（macOS は非対応）。今は画面のテスト（Vitest）と、手での実機確認で補う。
@@ -33,6 +33,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 - 照合のトークンは、Fine-grained トークン（対象のリポジトリだけ、Contents: Read-only）で足りる（2026-10-18 確認）。
 - GUI Step 0 は Mac と Windows の両方でロック一覧を表示できる（別アカウントのロックは「他人のロック」に出る）。Windows で更新してもコンソールの窓は出ない。Mac で Finder から起動しても git-lfs が見つかる。メモリは Mac（開発モード）で本体と WebKit のプロセスの合計が約 112MB、Windows で本体と WebView2 の合計が約 66MB（2026-10-19 確認）。
 - GUI Step 1 は Mac と Windows（ビルドしたアプリ）で動く：フォルダのドラッグ＆ドロップ、「ファイルをロック」（.meta も一緒）、自分のロックの解除、未コミットの変更があるときの「変更を残したまま解除」、別アカウントのロックの強制解除（管理者なら外れ、管理者でなければ理由を表示）（2026-10-20 確認）。
+- GUI Step 2 は Windows から Discord に届く（ロック・解除とも、.meta は元のファイルの行にまとまる）。.meta と元のファイルはそろえて扱われる：.meta の行から解除して元のファイルに未コミットの変更があると両方残る、そこから「変更を残したまま解除」で両方そろって外れ Discord には1回だけ流れる、片方だけ他人がロックしているペアは両方ロックしない（2026-10-21 確認）。
 - GUI の設定（最後に開いたフォルダ）の保存先は、Mac では `~/Library/WebKit` と `~/Library/Caches` の `com.example.repo-tweaks`（ビルドした .app）と `repo-tweaks-gui`（`npm run tauri dev`）（2026-10-20 確認）。
 
 ## 言語・書き方
