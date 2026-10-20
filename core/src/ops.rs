@@ -106,7 +106,6 @@ fn prepare(ctx: &RepoContext, config: &GitConfig, inputs: &[String]) -> Result<(
     if inputs.is_empty() {
         return Err("ファイルを指定してください".into());
     }
-    lfs::require_remote(config)?;
     let paths = inputs.iter().map(|p| ctx.repo_path(p)).collect::<Result<Vec<_>, _>>()?;
     let paths = ctx.tracked_case(paths);
     let locks = lfs::fetch_locks_in(ctx, config)?;
@@ -374,13 +373,11 @@ impl Plan {
         outcomes.into_iter().map(|o| o.unwrap_or(Outcome::SkippedPair)).collect()
     }
 
-    /// The other half of an asset / `.meta` pair, if it is among the targets.
+    /// The other half of an asset / `.meta` pair, if it is among the targets: added as a partner,
+    /// or named by the user as well (both picked in a dialog, or a glob such as `Hero.prefab*`).
     fn partner(&self, i: usize) -> Option<usize> {
-        let t = &self.targets[i];
-        match &t.pair_of {
-            Some(base) => self.targets.iter().position(|b| &b.path == base),
-            None => self.targets.iter().position(|p| p.pair_of.as_deref() == Some(t.path.as_str())),
-        }
+        let name = meta_partner(&self.targets[i].path)?.to_lowercase();
+        self.targets.iter().position(|t| t.path.to_lowercase() == name)
     }
 }
 
@@ -391,7 +388,8 @@ fn uncommitted(ctx: &RepoContext, targets: &[Target]) -> HashSet<String> {
     let ours: Vec<String> = targets
         .iter()
         .filter(|t| matches!(t.state, State::Ours(_)))
-        .map(|t| format!(":(top,literal){}", t.path))
+        // icase: a lock may be spelled differently from the tracked path (taken on Windows / macOS)
+        .map(|t| format!(":(top,icase,literal){}", t.path))
         .collect();
     if ours.is_empty() {
         return HashSet::new();
@@ -695,6 +693,32 @@ mod tests {
         assert!(matches!(&results[1], Outcome::Failed(m) if m.contains("未コミット")));
         assert_eq!(results[2], Outcome::Unlocked);
         assert_eq!(results[3], Outcome::Unlocked);
+    }
+
+    #[test]
+    fn a_pair_named_together_still_goes_together() {
+        // Both picked by the user (no pair_of): bob holds the .meta, so the asset is not locked either
+        let bob = locks().theirs[0].clone();
+        let p = plan(vec![
+            target("Hero.prefab", None, State::Free),
+            target("hero.prefab.META", None, State::Theirs(bob)),
+            target("Other.png", None, State::Free),
+        ]);
+        let mut ran = Vec::new();
+        let results = p.run_in_two_rounds(
+            |t| match &t.state {
+                State::Theirs(l) => Step::Done(Outcome::HeldByOther(l.clone())),
+                _ => Step::Run,
+            },
+            |o| matches!(o, Outcome::Locked { .. }),
+            |_, paths| {
+                ran.extend(paths.iter().map(|s| s.to_string()));
+                paths.iter().map(|p| (p.to_string(), Outcome::Locked { id: None, owner: None })).collect()
+            },
+        );
+        assert_eq!(ran, vec!["Other.png"]);
+        assert_eq!(results[0], Outcome::SkippedPair);
+        assert!(matches!(results[1], Outcome::HeldByOther(_)));
     }
 
     #[test]

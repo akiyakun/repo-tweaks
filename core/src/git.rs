@@ -4,12 +4,12 @@
 //! so values are read in as few calls as possible: one `git config` and one `git rev-parse`.
 
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const KEY_SERVER: &str = "repo-tweaks.server";
 pub const KEY_TOKEN: &str = "repo-tweaks.token";
@@ -61,22 +61,49 @@ fn exec(command: Command) -> io::Result<Output> {
 fn exec_limited(mut command: Command, secs: u64) -> io::Result<Output> {
     detach_from_terminal(&mut command);
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child = command.spawn()?;
-    let pid = child.id();
+    let mut child = command.spawn()?;
+    let stdout = read_in_background(child.stdout.take());
+    let stderr = read_in_background(child.stderr.take());
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let timed_out = || {
+        let message = format!(
+            "git が {secs} 秒たっても終わらないため止めました。ネットワークや、ログインの画面が出ていないかを確かめてください"
+        );
+        io::Error::new(io::ErrorKind::TimedOut, message)
+    };
+    // Waited for here, not in another thread: until try_wait reaps it, the pid (and so the process
+    // group to kill) cannot be given to another process.
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            kill_tree(child.id());
+            let _ = child.wait();
+            return Err(timed_out());
+        }
+        std::thread::sleep(POLL);
+    };
+    // Something git started may still hold the pipes; never wait past the deadline for them.
+    let left = |d: Instant| d.saturating_duration_since(Instant::now());
+    match (stdout.recv_timeout(left(deadline)), stderr.recv_timeout(left(deadline))) {
+        (Ok(stdout), Ok(stderr)) => Ok(Output { status, stdout, stderr }),
+        _ => Err(timed_out()),
+    }
+}
+
+const POLL: Duration = Duration::from_millis(10);
+
+fn read_in_background(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = sender.send(child.wait_with_output());
-    });
-    match receiver.recv_timeout(Duration::from_secs(secs)) {
-        Ok(result) => result,
-        Err(_) => {
-            kill_tree(pid);
-            let message = format!(
-                "git が {secs} 秒たっても終わらないため止めました。ネットワークや、ログインの画面が出ていないかを確かめてください"
-            );
-            Err(io::Error::new(io::ErrorKind::TimedOut, message))
+        let mut buffer = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buffer);
         }
-    }
+        let _ = sender.send(buffer);
+    });
+    receiver
 }
 
 /// A new session has no controlling terminal, so ssh cannot stop to ask for a passphrase or a host key.
@@ -344,6 +371,18 @@ mod tests {
             // SAFETY: signal 0 only checks whether the process exists (macOS, which has no /proc).
             Err(_) => (unsafe { libc::kill(pid, 0) }) == 0,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_leftover_holding_the_pipes_does_not_hang() {
+        // The shell (git) ends at once; the background sleep (git-lfs, ssh) keeps stdout open
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 3 & echo started"]);
+        let started = std::time::Instant::now();
+        let err = exec_limited(command, 1).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
     }
 
     #[test]

@@ -63,9 +63,9 @@ repo-tweaks/
 - GUI は CLI を呼ばず、core を直接使う。core の関数はカレントディレクトリを相手にするので、GUI 用に `GitConfig::read_in` / `RepoContext::open` / `lfs::fetch_locks_in` のようにフォルダを受け取る版を足す（GUI でカレントディレクトリを変えない。スレッドをまたいで共有されるため）。
 - GUI の見出しのリポジトリ名は `git::repo_name`（remote の名前を優先、無ければフォルダ名）。CLI・サーバーと同じ名前にする。
 - `git::run_in` は、git を起動する前にフォルダを確かめる（無い・フォルダでない・権限が無いを、「git が見つかりません」と取り違えない）。`RepoContext` の rev-parse が失敗したときは、git の理由の行（`fatal:` の行を優先）を添える（NAS 上の `dubious ownership` には `safe.directory` の案内）。
-- GUI は起動時に `git::set_timeout(60 秒)` を呼ぶ。1つの git が 60 秒を超えたら、git が起動したもの（git-lfs・ssh）ごと止める（Unix は setsid で新しいセッションにしてプロセスグループごと、Windows は `taskkill /T`）。setsid で端末から切り離すので、ssh もパスフレーズやホスト鍵を端末で聞かずに失敗する。CLI では呼ばない（端末で認証を聞けるように）。
+- GUI は起動時に `git::set_timeout(60 秒)` を呼ぶ。1つの git が 60 秒を超えたら、git が起動したもの（git-lfs・ssh）ごと止める（Unix は setsid で新しいセッションにしてプロセスグループごと、Windows は `taskkill /T`）。git の終了は呼んだスレッドで `try_wait` で待つ（別のスレッドで回収すると、止める前にその pid が別のプロセスに使い回されるおそれがある）。git が終わってもパイプを持つものが残っていたら、時間切れまでで打ち切り、止めはしない。setsid で端末から切り離すので、ssh もパスフレーズやホスト鍵を端末で聞かずに失敗する。CLI では呼ばない（端末で認証を聞けるように）。
 - GUI は `GIT_TERMINAL_PROMPT=0` も設定する。git lfs の呼び出しは GUI 全体で1本ずつ（Rust 側の Mutex）。更新に失敗しても直前の一覧は残す。最後に開いたフォルダは、開けたときだけ覚える。起動時の最初の取得は1回だけ（開発時の StrictMode でも）。
-- GUI のロック・解除は core の `ops::plan_lock_in` / `plan_unlock_in`（フォルダを受け取る版）で、`.meta` は常に一緒。結果の文言は core の `Outcome::describe`（CLI と共通）。強制解除は「`preview_force_unlock` で外れる他人のロックを見せる → 確認 → `unlock_files` で計画を作り直し、他人のロックがすべて確認した ID のうちにあるときだけ実行」。自分のロックが Git LFS に断られたとき（未コミットの変更・手元に無い）は、確認してから `force`（ID で解除）。
+- GUI のロック・解除は core の `ops::plan_lock_in` / `plan_unlock_in`（フォルダを受け取る版）で、`.meta` は常に一緒。結果の文言は core の `Outcome::describe`（CLI と共通）。強制解除は「`preview_force_unlock` で外れる他人のロックを見せる → 確認 → `unlock_files` で計画を作り直し、他人のロックがすべて確認した ID のうちにあるときだけ実行」。自分のロックが Git LFS に断られたとき（未コミットの変更・手元に無い）は、こちらも `preview_force_unlock` で対になる他人のロックを見せて確認してから `force`（自分のロックは ID で解除）。確認した ID の判定（`only_confirmed`）は `force` のときだけ（ふつうの解除で他人のロックが混ざったら、そのファイルだけ「他人がロック中」と出す）。確認ダイアログは、フォルダを開き直すと閉じる。実行中は次の操作を受け付けない（ボタンの2回押しで2回走らない）。
 - 通知の処理は core（`server.rs`：送り先の設定・HTTP クライアント・イベントの型、`notify.rs`：結果からイベントを作る・名前の決め方・送信）。結果は `Notified`（Nothing / NoServer / Sent / Failed）で返し、表示は呼ぶ側（CLI は stderr、GUI は結果の下）。CLI と GUI は同じ中身を送る。GUI も `repo-tweaks.notify false` で止まる。`RepoInfo::in_dir` でフォルダを指定して作る。
 - GUI の「N日以上ロックされたまま」の文は core の `locks::stale_warning`、更新の時刻も Rust 側の format_jst（日本時間）で作る。
 - GUI の表示用の文字列（日本時間・経過時間・古さ）は Rust 側（gui/src-tauri/src/view.rs）で core の format_jst / format_age を使って作り、CLI と同じ言い回しにする。
@@ -78,8 +78,8 @@ repo-tweaks/
 - `git lfs locks --verify --json` は、リポジトリ外・remote なし・認証失敗でも終了コード 0 で空の一覧を返す。必ず事前の確認と stderr（`fatal:` / `error`）の確認をして、空の一覧を「ロックなし」と誤表示しない。JSON の `[]`（`--verify` なしの形）も受け付けない。
 - **ネットワークのエラー（ホストが無い等）では、`--json` は stderr に何も出さず、終了コード 0 で空の一覧を返す**（git-lfs 3.7 で確認）。そのため空の一覧のときだけ、`git lfs locks --verify --limit 1`（`--json` なし。エラーなら終了コード 2）でもう一度確かめる。
 - lock / unlock は「計画（パスの解決・.meta の追加・一覧から自分 / 他人 / 未ロックを判定）→ 実行」の2段階。強制解除の確認は計画と実行の間で、呼ぶ側（CLI の y/N、Unity・GUI の画面）が行う。core は確認しない。
-- `.meta` の扱い：lock はディスクにある相方を追加、unlock は自分の（`--force` なら誰のでも）ロックの相方だけを追加。ペアはそろえて扱う（持ち主が分かれないように）：実行の前に、片方が断られる（他人のロック・未コミットの変更・手元に無い など）と分かれば、もう片方も `SkippedPair`（しませんでした）にして触らない。実行は指定したファイル → 相方の順で、相方は元のファイルが成功したときだけ。`--no-meta` で無効。
-- 解除の前に、自分のロックの対象を `git status --porcelain -z --no-renames --untracked-files=all` で確かめ、出てきたもの（未追跡も含む。git lfs も断る。git-lfs 3.4 で確認）は git lfs に渡さずに「未コミットの変更」として断る（`--force` のときは確かめない）。git status が失敗したら確かめずに git lfs に任せる。
+- `.meta` の扱い：lock はディスクにある相方を追加、unlock は自分の（`--force` なら誰のでも）ロックの相方だけを追加。ペアはそろえて扱う（持ち主が分かれないように。相方として足したときも、両方とも指定されたとき〔ダイアログで両方選ぶ・`Hero.prefab*`〕も、名前で対を見つける）：実行の前に、片方が断られる（他人のロック・未コミットの変更・手元に無い など）と分かれば、もう片方も `SkippedPair`（しませんでした）にして触らない。実行は指定したファイル → 相方の順で、相方は元のファイルが成功したときだけ。`--no-meta` で無効。
+- 解除の前に、自分のロックの対象を `git status --porcelain -z --no-renames --untracked-files=all`（pathspec は `:(top,icase,literal)`。ロックの表記が git と大小違いでも見落とさない）で確かめ、出てきたもの（未追跡も含む。git lfs も断る。git-lfs 3.4 で確認）は git lfs に渡さずに「未コミットの変更」として断る（`--force` のときは確かめない）。git status が失敗したら確かめずに git lfs に任せる。
 - git lfs は1回の呼び出しに複数パスを渡す（指定したファイル → 相方の2回）。並列に実行しない（`.git/lfs/lockcache.db` を共有するため）。
 - パスは `git ls-files` の `:(icase,literal)` で git の表記に合わせ、ロックとは大文字・小文字を無視して突き合わせる（大小違いで二重ロックしない）。
 - 解除はパスで行う（Git LFS の「未コミットの変更があれば拒否」を生かす）。git lfs の出力形式は git-lfs 3.7 の `commands/command_lock.go` / `command_unlock.go` に合わせている。

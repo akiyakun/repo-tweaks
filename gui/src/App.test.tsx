@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { describe, expect, it } from "vitest";
@@ -121,6 +121,7 @@ describe("unlock", () => {
     const calls = fakeBackend({
       initial_folder: () => "/work/game",
       list_locks: () => report({ ours: [lock("Assets/Main.unity", "alice")] }),
+      preview_force_unlock: () => [],
       unlock_files: (args) =>
         args.force
           ? opReport([result("Assets/Main.unity", "解除しました")])
@@ -146,6 +147,35 @@ describe("unlock", () => {
       paths: ["Assets/Main.unity"],
       force: true,
       confirmed: [],
+    });
+  });
+
+  it("also confirms someone else's lock on the other half of the pair", async () => {
+    const calls = fakeBackend({
+      initial_folder: () => "/work/game",
+      list_locks: () => report({ ours: [lock("Assets/Main.unity", "alice")] }),
+      preview_force_unlock: () => [
+        { id: "8", path: "Assets/Main.unity.meta", owner: "bob", lockedAt: "10/15 20:01" },
+      ],
+      unlock_files: (args) =>
+        args.force
+          ? opReport([result("Assets/Main.unity", "解除しました")])
+          : opReport([result("Assets/Main.unity", "できません", { ok: false, canForce: true })]),
+    });
+    renderApp();
+    await screen.findByText("Main.unity");
+    await userEvent.click(screen.getByRole("button", { name: /解除/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "変更を残したまま解除" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Assets/Main.unity.meta")).toBeInTheDocument();
+    expect(within(dialog).getByText(/そのロックも強制解除します/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "解除する" }));
+    await screen.findByText("解除しました");
+    expect(callsTo(calls, "unlock_files")[1]).toEqual({
+      root: "/work/game",
+      paths: ["Assets/Main.unity"],
+      force: true,
+      confirmed: ["8"],
     });
   });
 });
@@ -199,6 +229,38 @@ describe("forced unlock of someone else's lock", () => {
     expect(callsTo(calls, "unlock_files")).toEqual([
       { root: "/work/game", paths: ["Assets/Art/hero.psd"], force: true, confirmed: ["3", "4"] },
     ]);
+  });
+
+  it("runs once even when the confirm button is clicked twice", async () => {
+    const calls = backend();
+    renderApp();
+    await screen.findByText("hero.psd");
+    await userEvent.click(screen.getByRole("button", { name: /強制解除/ }));
+    const confirm = within(await screen.findByRole("alertdialog")).getByRole("button", { name: "強制解除する" });
+    // Both clicks land before React re-renders and removes the dialog, as a fast double click can
+    act(() => {
+      confirm.click();
+      confirm.click();
+    });
+    await screen.findByText("強制解除しました");
+    expect(callsTo(calls, "unlock_files")).toHaveLength(1);
+  });
+
+  it("drops the pending confirmation when another folder is opened", async () => {
+    const calls = fakeBackend({
+      initial_folder: () => "/work/game",
+      list_locks: (args) => (args.dir === "/work/game" ? report({ theirs: [lock("Assets/Art/hero.psd", "bob")] }) : report({ root: "/work/other", name: "other" })),
+      preview_force_unlock: () => [{ id: "3", path: "Assets/Art/hero.psd", owner: "bob", lockedAt: "10/15 20:01" }],
+      dropped_folder: () => "/work/other",
+    });
+    renderApp();
+    await screen.findByText("hero.psd");
+    await userEvent.click(screen.getByRole("button", { name: /強制解除/ }));
+    await screen.findByRole("alertdialog");
+    await dropPaths(["/work/other"]);
+    expect(await screen.findByText("other")).toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(callsTo(calls, "unlock_files")).toEqual([]);
   });
 
   it("says so when the lock is already gone", async () => {

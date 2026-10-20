@@ -94,16 +94,17 @@ async fn unlock_files(root: String, paths: Vec<String>, force: bool, confirmed: 
         let config = GitConfig::read_in(&ctx.root);
         let root = ctx.root.clone();
         let plan = ops::plan_unlock_in(ctx, &config, &paths, true, force)?;
-        only_confirmed(&plan.others_locks(), &confirmed)?;
+        only_confirmed(force, &plan.others_locks(), &confirmed)?;
         Ok(report(&root, &config, &plan.unlock()))
     })
     .await
 }
 
-/// Refuse when the plan would remove someone else's lock the user did not see in the confirmation
-/// (taken or changed since): nothing has been changed yet at this point.
-fn only_confirmed(others: &[&Lock], confirmed: &[String]) -> Result<(), String> {
-    if others.iter().any(|l| !confirmed.contains(&l.id)) {
+/// With `force`, refuse when the plan would remove someone else's lock the user did not see in the
+/// confirmation (taken or changed since): nothing has been changed yet at this point.
+/// Without `force`, other people's locks are only reported per file (OthersLock), never removed.
+fn only_confirmed(force: bool, others: &[&Lock], confirmed: &[String]) -> Result<(), String> {
+    if force && others.iter().any(|l| !confirmed.contains(&l.id)) {
         return Err("確認したあとにロックの状態が変わりました。一覧を更新して、もう一度やり直してください（何も変更していません）".into());
     }
     Ok(())
@@ -187,14 +188,16 @@ mod tests {
     #[test]
     fn forced_unlock_needs_every_lock_confirmed() {
         let (a, b) = (lock("3"), lock("4"));
-        assert!(only_confirmed(&[&a, &b], &["3".into(), "4".into()]).is_ok());
+        assert!(only_confirmed(true, &[&a, &b], &["3".into(), "4".into()]).is_ok());
         // Nothing of someone else's to remove (our own lock by ID): nothing to confirm
-        assert!(only_confirmed(&[], &[]).is_ok());
+        assert!(only_confirmed(true, &[], &[]).is_ok());
         // A lock that appeared after the confirmation (e.g. someone took the .meta meanwhile)
-        let err = only_confirmed(&[&a, &b], &["3".into()]).unwrap_err();
+        let err = only_confirmed(true, &[&a, &b], &["3".into()]).unwrap_err();
         assert!(err.contains("何も変更していません"), "{err}");
         // Confirmed more than is left (one was released meanwhile): fine
-        assert!(only_confirmed(&[&a], &["3".into(), "4".into()]).is_ok());
+        assert!(only_confirmed(true, &[&a], &["3".into(), "4".into()]).is_ok());
+        // A plain unlock of a file someone else re-took: reported per file, not a confirmation error
+        assert!(only_confirmed(false, &[&a], &[]).is_ok());
     }
 
     #[test]

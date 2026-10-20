@@ -84,6 +84,8 @@ export function App() {
         setNotice("ロック・解除の途中です。終わってからフォルダを開いてください");
         return;
       }
+      // A pending confirmation belongs to the old folder
+      setConfirm(null);
       setReport(null);
       setError(null);
       setResults(null);
@@ -146,7 +148,8 @@ export function App() {
   /** Run a lock / unlock, show what happened to each file (and to the notification), then reload the list. */
   const runOp = useCallback(
     async (title: string, op: () => Promise<OpReport>) => {
-      if (!dir) return;
+      // Also stops a second click on a dialog button before the dialog has closed
+      if (!dir || busyRef.current) return;
       busyRef.current = true;
       setBusy(true);
       setResults(null);
@@ -180,42 +183,58 @@ export function App() {
     [report, runOp],
   );
 
+  /** Ask the Rust side which other people's locks a forced unlock of `path` would also remove. */
+  const previewOthers = useCallback(
+    async (path: string): Promise<OthersLock[] | null> => {
+      if (!report || busyRef.current) return null;
+      busyRef.current = true;
+      setBusy(true);
+      setNotice(null);
+      try {
+        return await previewForceUnlock(report.root, [path]);
+      } catch (e) {
+        setResults({ title: "強制解除", error: String(e) });
+        return null;
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    },
+    [report],
+  );
+
   // Our own lock that git lfs refused (uncommitted changes, deleted file): remove it by ID.
+  // Its pair goes too; if someone else holds the other half, that is shown and confirmed as well.
   const forceOwn = useCallback(
-    (path: string) => {
+    async (path: string) => {
       if (!report) return;
+      const others = await previewOthers(path);
+      if (others === null) return;
+      const theirs =
+        others.length > 0
+          ? `対になるファイルを他人がロックしているため、そのロックも強制解除します（GitHub では管理者（admin）だけができます）。`
+          : "";
       setConfirm({
         title: "変更を残したまま解除しますか？",
-        message:
-          "未コミットの変更や、手元に無いファイルがあっても、自分のロックを解除します。ファイルの変更はそのまま残ります。解除したあとは、ほかの人がロックして編集できるようになります。.meta と元のファイルは、自分がロックしていれば一緒に解除します。",
-        items: [{ path }],
+        message: `未コミットの変更や、手元に無いファイルがあっても、自分のロックを解除します。ファイルの変更はそのまま残ります。解除したあとは、ほかの人がロックして編集できるようになります。.meta と元のファイルは、自分がロックしていれば一緒に解除します。${theirs}`,
+        items: [{ path }, ...others.map((o) => ({ path: o.path, detail: `${o.owner}  ${o.lockedAt} から` }))],
         confirmLabel: "解除する",
         onConfirm: () => {
           setConfirm(null);
-          void runOp("解除", () => unlockFiles(report.root, [path], true, []));
+          const ids = others.map((o) => o.id);
+          void runOp("解除", () => unlockFiles(report.root, [path], true, ids));
         },
       });
     },
-    [report, runOp],
+    [report, runOp, previewOthers],
   );
 
   // Someone else's lock: show exactly what would go (with its .meta), then remove only those.
   const forceOthers = useCallback(
     async (lock: LockRow) => {
       if (!report) return;
-      busyRef.current = true;
-      setBusy(true);
-      setNotice(null);
-      let others: OthersLock[];
-      try {
-        others = await previewForceUnlock(report.root, [lock.path]);
-      } catch (e) {
-        setResults({ title: "強制解除", error: String(e) });
-        return;
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-      }
+      const others = await previewOthers(lock.path);
+      if (others === null) return;
       if (others.length === 0) {
         setNotice(`${lock.path} のロックは、すでに解除されています`);
         if (dir) void refresh(dir);
@@ -234,7 +253,7 @@ export function App() {
         },
       });
     },
-    [report, dir, runOp, refresh],
+    [report, dir, runOp, refresh, previewOthers],
   );
 
   const closeConfirm = useCallback(() => setConfirm(null), []);
@@ -295,7 +314,12 @@ export function App() {
             />
           )}
           {results && (
-            <ResultsPanel results={results} onClose={() => setResults(null)} onForce={forceOwn} disabled={busy} />
+            <ResultsPanel
+              results={results}
+              onClose={() => setResults(null)}
+              onForce={(path) => void forceOwn(path)}
+              disabled={busy}
+            />
           )}
           {dir && !report && !error && loading && <Loading />}
           {report && (
