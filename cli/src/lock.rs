@@ -184,7 +184,7 @@ mod tests {
 ロックしました  Assets/Main.unity.meta（自動で追加）
 ロック済み      README.md                               自分がロック中
 できません      Assets/Art/hero.psd                     bob さんが 10/14 10:00 からロック中
-しませんでした  Assets/Art/hero.psd.meta（自動で追加）  元のファイルを処理できなかったため
+しませんでした  Assets/Art/hero.psd.meta（自動で追加）  対になるファイル（.meta と元のファイル）の片方を処理できないため、そろえてそのままにしました
 ";
         assert_eq!(render(&results, NOW), expected);
     }

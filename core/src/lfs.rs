@@ -82,11 +82,15 @@ pub(crate) fn first_line(stderr: &str) -> &str {
     stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("理由不明")
 }
 
+/// Why git lfs refuses to unlock a file with uncommitted changes (also said before asking it).
+pub(crate) const UNCOMMITTED: &str =
+    "未コミットの変更があるため解除できません。コミットしてから解除するか、強制解除（--force）してください。";
+
 /// A Japanese hint for a git lfs error line, followed by the original line.
 pub(crate) fn explain(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     let hint = if lower.contains("uncommitted changes") {
-        "未コミットの変更があるため解除できません。コミットしてから解除するか、強制解除（--force）してください。"
+        UNCOMMITTED
     } else if lower.contains("lock exists") || lower.contains("already locked") || lower.contains("already created") {
         "ほかの人がすでにロックしています。repo-tweaks list で確かめてください。"
     } else if lower.contains("could not read username")

@@ -14,7 +14,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
 - 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）、Step 5（サーバーによる定期的な照合と滞留の警告。GitHub のみ）、Step 6（`.gitattributes` の lockable を対象に、`status` / pre-commit の `check` / `install-hooks`。実機の確認待ち）。
-- GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）。Mac / Windows で確認済み。Step 1（ロック・解除・強制解除、フォルダのドラッグ＆ドロップ）。Mac / Windows で確認済み。Step 2（ロック・解除をサーバー → Discord に通知。CLI の通知の処理を core へ移す）を作成、実機では未確認。
+- GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）。Mac / Windows で確認済み。Step 1（ロック・解除・強制解除、フォルダのドラッグ＆ドロップ）。Mac / Windows で確認済み。Step 2（ロック・解除をサーバー → Discord に通知。CLI の通知の処理を core へ移す）。Windows で通知が届くのを確認。.meta と元のファイルをそろえて扱う修正（CLI も）は実機では未確認。
 - 次の候補は、Unity 拡張（HANDOFF のフェーズ 2。ロックしていない lockable のアセットを `IsOpenForEdit` でグレーアウトし、ロック・解除のボタンを付ける）、GitLab への照合の対応。通知先は Discord（Slack は後回し）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
@@ -75,7 +75,8 @@ repo-tweaks/
 - `git lfs locks --verify --json` は、リポジトリ外・remote なし・認証失敗でも終了コード 0 で空の一覧を返す。必ず事前の確認と stderr（`fatal:` / `error`）の確認をして、空の一覧を「ロックなし」と誤表示しない。JSON の `[]`（`--verify` なしの形）も受け付けない。
 - **ネットワークのエラー（ホストが無い等）では、`--json` は stderr に何も出さず、終了コード 0 で空の一覧を返す**（git-lfs 3.7 で確認）。そのため空の一覧のときだけ、`git lfs locks --verify --limit 1`（`--json` なし。エラーなら終了コード 2）でもう一度確かめる。
 - lock / unlock は「計画（パスの解決・.meta の追加・一覧から自分 / 他人 / 未ロックを判定）→ 実行」の2段階。強制解除の確認は計画と実行の間で、呼ぶ側（CLI の y/N、Unity・GUI の画面）が行う。core は確認しない。
-- `.meta` の扱い：lock はディスクにある相方を追加、unlock は自分の（`--force` なら誰のでも）ロックの相方だけを追加。相方は元のファイルが成功したときだけ処理する（持ち主が分かれないように）。`--no-meta` で無効。
+- `.meta` の扱い：lock はディスクにある相方を追加、unlock は自分の（`--force` なら誰のでも）ロックの相方だけを追加。ペアはそろえて扱う（持ち主が分かれないように）：実行の前に、片方が断られる（他人のロック・未コミットの変更・手元に無い など）と分かれば、もう片方も `SkippedPair`（しませんでした）にして触らない。実行は指定したファイル → 相方の順で、相方は元のファイルが成功したときだけ。`--no-meta` で無効。
+- 解除の前に、自分のロックの対象を `git status --porcelain -z --no-renames --untracked-files=all` で確かめ、出てきたもの（未追跡も含む。git lfs も断る。git-lfs 3.4 で確認）は git lfs に渡さずに「未コミットの変更」として断る（`--force` のときは確かめない）。git status が失敗したら確かめずに git lfs に任せる。
 - git lfs は1回の呼び出しに複数パスを渡す（指定したファイル → 相方の2回）。並列に実行しない（`.git/lfs/lockcache.db` を共有するため）。
 - パスは `git ls-files` の `:(icase,literal)` で git の表記に合わせ、ロックとは大文字・小文字を無視して突き合わせる（大小違いで二重ロックしない）。
 - 解除はパスで行う（Git LFS の「未コミットの変更があれば拒否」を生かす）。git lfs の出力形式は git-lfs 3.7 の `commands/command_lock.go` / `command_unlock.go` に合わせている。

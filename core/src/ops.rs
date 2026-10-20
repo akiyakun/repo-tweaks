@@ -8,7 +8,7 @@
 //! several in parallel. Paths the user named go first; `.meta` partners follow only for files whose
 //! own lock or unlock went through, so an asset and its `.meta` never end up held by different people.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -56,7 +56,8 @@ pub enum Outcome {
     NotLocked,
     /// Unlock without --force: someone else holds it
     OthersLock(Lock),
-    /// `.meta` partner left alone because its asset could not be locked / unlocked
+    /// Left alone because its partner (the `.meta`, or the asset of a `.meta`) cannot be locked /
+    /// unlocked: an asset and its `.meta` always change together
     SkippedPair,
     Failed(String),
 }
@@ -78,7 +79,10 @@ impl Outcome {
             Outcome::HeldByOther(l) => ("できません", Some(format!("{} さんが {} からロック中", l.owner, since(l)))),
             Outcome::NoSuchFile => ("できません", Some("ファイルがありません".into())),
             Outcome::IsDirectory => ("できません", Some("フォルダはロックできません。ファイルを指定してください".into())),
-            Outcome::SkippedPair => ("しませんでした", Some("元のファイルを処理できなかったため".into())),
+            Outcome::SkippedPair => (
+                "しませんでした",
+                Some("対になるファイル（.meta と元のファイル）の片方を処理できないため、そろえてそのままにしました".into()),
+            ),
             Outcome::Unlocked => ("解除しました", None),
             Outcome::ForceUnlocked(l) => ("強制解除しました", Some(format!("{} さんのロック", l.owner))),
             Outcome::NotLocked => ("ロックなし", None),
@@ -234,6 +238,7 @@ fn with_state(targets: Vec<(String, Option<String>)>, locks: &LockList) -> Vec<T
 }
 
 /// What to do with one target: settle it now, or hand its path to git lfs.
+#[derive(Clone)]
 enum Step {
     Done(Outcome),
     Run,
@@ -274,6 +279,8 @@ impl Plan {
 
     pub fn unlock(self) -> Vec<(Target, Outcome)> {
         let (ctx, force) = (&self.ctx, self.force);
+        // Checked here so an asset and its .meta can be refused together, before either is unlocked
+        let changed = if force { HashSet::new() } else { uncommitted(ctx, &self.targets) };
         let decide = |t: &Target| match &t.state {
             State::Free => Step::Done(Outcome::NotLocked),
             State::Theirs(lock) if !force => Step::Done(Outcome::OthersLock(lock.clone())),
@@ -281,6 +288,7 @@ impl Plan {
             State::Ours(_) if !force && !ctx.disk_path(&t.path).exists() => Step::Done(Outcome::Failed(
                 "手元にファイルが無いため解除できません（削除・移動したファイル）。強制解除（--force）なら解除できます".into(),
             )),
+            State::Ours(_) if changed.contains(&t.path.to_lowercase()) => Step::Done(Outcome::Failed(lfs::UNCOMMITTED.into())),
             _ => Step::Run,
         };
         let ok = |o: &Outcome| matches!(o, Outcome::Unlocked | Outcome::ForceUnlocked(_) | Outcome::NotLocked);
@@ -317,13 +325,17 @@ impl Plan {
     }
 
     /// Round 1: the paths the user named. Round 2: `.meta` partners whose asset succeeded (`ok`).
-    /// Returns one outcome per target, in order.
+    /// A pair goes together: when `decide` already refuses one of them (someone else's lock,
+    /// uncommitted changes, ...), the other is left alone too, so the asset and its `.meta` never
+    /// end up with different owners. Returns one outcome per target, in order.
     fn run_in_two_rounds(
         &self,
         decide: impl Fn(&Target) -> Step,
         ok: impl Fn(&Outcome) -> bool,
         mut run: impl FnMut(&RepoContext, &[&str]) -> HashMap<String, Outcome>,
     ) -> Vec<Outcome> {
+        let steps: Vec<Step> = self.targets.iter().map(&decide).collect();
+        let refused = |i: usize| matches!(&steps[i], Step::Done(o) if o.is_failure());
         let mut outcomes: Vec<Option<Outcome>> = vec![None; self.targets.len()];
         for round in [false, true] {
             let mut to_run = Vec::new();
@@ -331,15 +343,19 @@ impl Plan {
                 if t.pair_of.is_some() != round {
                     continue;
                 }
-                if let Some(base) = &t.pair_of {
+                if !refused(i) && self.partner(i).is_some_and(refused) {
+                    outcomes[i] = Some(Outcome::SkippedPair);
+                    continue;
+                }
+                if let (Some(base), Step::Run) = (&t.pair_of, &steps[i]) {
                     let base_ok = self.targets.iter().zip(&outcomes).any(|(b, o)| &b.path == base && o.as_ref().is_some_and(&ok));
                     if !base_ok {
                         outcomes[i] = Some(Outcome::SkippedPair);
                         continue;
                     }
                 }
-                match decide(t) {
-                    Step::Done(o) => outcomes[i] = Some(o),
+                match &steps[i] {
+                    Step::Done(o) => outcomes[i] = Some(o.clone()),
                     Step::Run => to_run.push(i),
                 }
             }
@@ -357,6 +373,40 @@ impl Plan {
         }
         outcomes.into_iter().map(|o| o.unwrap_or(Outcome::SkippedPair)).collect()
     }
+
+    /// The other half of an asset / `.meta` pair, if it is among the targets.
+    fn partner(&self, i: usize) -> Option<usize> {
+        let t = &self.targets[i];
+        match &t.pair_of {
+            Some(base) => self.targets.iter().position(|b| &b.path == base),
+            None => self.targets.iter().position(|p| p.pair_of.as_deref() == Some(t.path.as_str())),
+        }
+    }
+}
+
+/// Our locked targets that git lfs would refuse to unlock (lowercased): whatever `git status` lists
+/// for them, untracked files included, as git lfs checks the same (seen with git-lfs 3.4).
+/// Empty when git status cannot tell; git lfs then decides on its own.
+fn uncommitted(ctx: &RepoContext, targets: &[Target]) -> HashSet<String> {
+    let ours: Vec<String> = targets
+        .iter()
+        .filter(|t| matches!(t.state, State::Ours(_)))
+        .map(|t| format!(":(top,literal){}", t.path))
+        .collect();
+    if ours.is_empty() {
+        return HashSet::new();
+    }
+    let mut args = vec!["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--"];
+    args.extend(ours.iter().map(String::as_str));
+    match git::output_in(&ctx.root, &args) {
+        Ok(out) if out.status.success() => status_paths(&String::from_utf8_lossy(&out.stdout)),
+        _ => HashSet::new(),
+    }
+}
+
+/// Paths in `git status --porcelain=v1 -z --no-renames` output ("XY path\0" entries), lowercased.
+fn status_paths(stdout: &str) -> HashSet<String> {
+    stdout.split('\0').filter_map(|entry| entry.get(3..)).filter(|p| !p.is_empty()).map(str::to_lowercase).collect()
 }
 
 /// `reason` is already explained ("<hint>（git lfs: <line>）"); swap the hint for one about forcing.
@@ -618,6 +668,59 @@ mod tests {
         );
         assert!(matches!(results[0], Outcome::HeldByOther(_)));
         assert_eq!(results[1], Outcome::SkippedPair);
+    }
+
+    #[test]
+    fn a_refused_partner_holds_back_its_asset() {
+        // The user named the .meta; the asset (added as its partner) has uncommitted changes.
+        // Neither is unlocked, so they keep one owner.
+        let mine = locks().ours[0].clone();
+        let p = plan(vec![
+            target("a.rsp.meta", None, State::Ours(mine.clone())),
+            target("a.rsp", Some("a.rsp.meta"), State::Ours(mine.clone())),
+            target("b.unity", None, State::Ours(mine.clone())),
+            target("b.unity.meta", Some("b.unity"), State::Ours(mine)),
+        ]);
+        let mut ran = Vec::new();
+        let results = p.run_in_two_rounds(
+            |t| if t.path == "a.rsp" { Step::Done(Outcome::Failed("未コミットの変更".into())) } else { Step::Run },
+            |o| matches!(o, Outcome::Unlocked),
+            |_, paths| {
+                ran.extend(paths.iter().map(|s| s.to_string()));
+                paths.iter().map(|p| (p.to_string(), Outcome::Unlocked)).collect()
+            },
+        );
+        assert_eq!(ran, vec!["b.unity", "b.unity.meta"]);
+        assert_eq!(results[0], Outcome::SkippedPair);
+        assert!(matches!(&results[1], Outcome::Failed(m) if m.contains("未コミット")));
+        assert_eq!(results[2], Outcome::Unlocked);
+        assert_eq!(results[3], Outcome::Unlocked);
+    }
+
+    #[test]
+    fn a_meta_held_by_someone_else_keeps_the_asset_unlocked() {
+        let bob = locks().theirs[0].clone();
+        let p = plan(vec![
+            target("a.unity", None, State::Free),
+            target("a.unity.meta", Some("a.unity"), State::Theirs(bob)),
+        ]);
+        let results = p.run_in_two_rounds(
+            |t| match &t.state {
+                State::Theirs(l) => Step::Done(Outcome::HeldByOther(l.clone())),
+                _ => Step::Run,
+            },
+            |o| matches!(o, Outcome::Locked { .. }),
+            |_, _| panic!("nothing should be locked"),
+        );
+        assert_eq!(results[0], Outcome::SkippedPair);
+        assert!(matches!(results[1], Outcome::HeldByOther(_)));
+    }
+
+    #[test]
+    fn status_paths_from_porcelain() {
+        let got = status_paths(" M Assets/A.unity\0?? Assets/New File.prefab\0A  b.psd\0");
+        assert_eq!(got, ["assets/a.unity", "assets/new file.prefab", "b.psd"].into_iter().map(String::from).collect());
+        assert!(status_paths("").is_empty());
     }
 
     #[test]
