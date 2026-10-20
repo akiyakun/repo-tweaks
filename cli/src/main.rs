@@ -1,8 +1,6 @@
 //! repo-tweaks CLI
 
 mod check;
-mod client;
-mod config;
 mod install;
 mod list;
 mod lock;
@@ -13,8 +11,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use client::{Client, Event};
 use repo_tweaks_core::git;
+use repo_tweaks_core::server::{Client, Config, Event};
 
 #[derive(Parser)]
 #[command(name = "repo-tweaks", version, about = "repo-tweaks の CLI")]
@@ -117,7 +115,7 @@ fn main() -> ExitCode {
 fn run(command: Command) -> Result<ExitCode, String> {
     let git_config = git::GitConfig::read();
     // Only commands that talk to the repo-tweaks server need its address and token.
-    let client = || config::Config::load(&git_config).map(Client::new);
+    let client = || Config::load(&git_config).map(Client::new);
     match command {
         Command::List { json, stale_days } => list::run(&git_config, json, stale_days)?,
         Command::Lock { paths, no_meta, json, no_notify } => {

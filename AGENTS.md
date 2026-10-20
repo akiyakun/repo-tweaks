@@ -14,7 +14,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 
 - 小さく1段ずつ作る。全体の計画を一度に出さず、次の1段の範囲を利用者と決めてから実装する。
 - 完了: Step 0（CLI ↔ サーバーの疎通テスト）、Step 1（`repo-tweaks list`。読むだけ）、Step 2（`lock` / `unlock`）、Step 3（サーバーの管理画面：ログイン・パスワード・Discord の通知先。NAS で起動・確認済み）、Step 4（lock / unlock の成功を CLI → サーバー → Discord に通知）、Step 5（サーバーによる定期的な照合と滞留の警告。GitHub のみ）、Step 6（`.gitattributes` の lockable を対象に、`status` / pre-commit の `check` / `install-hooks`。実機の確認待ち）。
-- GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）。Mac / Windows で確認済み。Step 1（ロック・解除・強制解除、フォルダのドラッグ＆ドロップ）。Mac / Windows で確認済み。
+- GUI：Step 0（Tauri の雛形と、ロック一覧の表示。読むだけ）。Mac / Windows で確認済み。Step 1（ロック・解除・強制解除、フォルダのドラッグ＆ドロップ）。Mac / Windows で確認済み。Step 2（ロック・解除をサーバー → Discord に通知。CLI の通知の処理を core へ移す）を作成、実機では未確認。
 - 次の候補は、Unity 拡張（HANDOFF のフェーズ 2。ロックしていない lockable のアセットを `IsOpenForEdit` でグレーアウトし、ロック・解除のボタンを付ける）、GitLab への照合の対応。通知先は Discord（Slack は後回し）。
 - 実機の確認（Windows、Fork、GitHub / GitLab への接続、NAS）は利用者が行う。結果を受け取ってから直す。
 
@@ -44,7 +44,7 @@ Git LFS のロックを土台にした、Unity チーム開発向けのファイ
 ```text
 repo-tweaks/
 ├─ Cargo.toml        Rust workspace（members: core, cli）
-├─ core/             Rust のライブラリ。git.rs（git の呼び出し・設定）、locks.rs（ロックの解釈・古さ・日本時間の表示）、lfs.rs（git lfs locks の実行とエラーの見分け）、paths.rs（パスをリポジトリのルートからの相対に直す）、ops.rs（ロック・解除の計画と実行）、lockable.rs（lockable のファイルの状態とコミット前の確認）
+├─ core/             Rust のライブラリ。git.rs（git の呼び出し・設定）、server.rs（サーバーの設定と HTTP クライアント）、notify.rs（ロック・解除の通知）、locks.rs（ロックの解釈・古さ・日本時間の表示）、lfs.rs（git lfs locks の実行とエラーの見分け）、paths.rs（パスをリポジトリのルートからの相対に直す）、ops.rs（ロック・解除の計画と実行）、lockable.rs（lockable のファイルの状態とコミット前の確認）
 ├─ cli/              Rust の CLI。コマンド名 repo-tweaks（list / lock / unlock / status / check / install-hooks / ping / notify / events）
 ├─ gui/              Tauri v2 + React + TypeScript + Tailwind CSS（shadcn/ui 風の部品は src/components/ui に手で置く）。src-tauri/ が Rust 側で、core を直接使う
 ├─ server/           Python 3.12 + Starlette + uvicorn + Jinja2。Docker で動かす。app.py（CLI 用 API）、admin.py（管理画面）、security.py / settings.py / notify.py（cloud-drive-sync の管理画面と同じ作り）
@@ -63,7 +63,8 @@ repo-tweaks/
 - `git::run_in` は、git を起動する前にフォルダを確かめる（無い・フォルダでない・権限が無いを、「git が見つかりません」と取り違えない）。`RepoContext` の rev-parse が失敗したときは、git の理由の行（`fatal:` の行を優先）を添える（NAS 上の `dubious ownership` には `safe.directory` の案内）。
 - GUI は起動時に `git::set_timeout(60 秒)` を呼ぶ。1つの git が 60 秒を超えたら、git が起動したもの（git-lfs・ssh）ごと止める（Unix は setsid で新しいセッションにしてプロセスグループごと、Windows は `taskkill /T`）。setsid で端末から切り離すので、ssh もパスフレーズやホスト鍵を端末で聞かずに失敗する。CLI では呼ばない（端末で認証を聞けるように）。
 - GUI は `GIT_TERMINAL_PROMPT=0` も設定する。git lfs の呼び出しは GUI 全体で1本ずつ（Rust 側の Mutex）。更新に失敗しても直前の一覧は残す。最後に開いたフォルダは、開けたときだけ覚える。起動時の最初の取得は1回だけ（開発時の StrictMode でも）。
-- GUI のロック・解除は core の `ops::plan_lock_in` / `plan_unlock_in`（フォルダを受け取る版）で、`.meta` は常に一緒。結果の文言は core の `Outcome::describe`（CLI と共通）。強制解除は「`preview_force_unlock` で外れる他人のロックを見せる → 確認 → `unlock_files` で計画を作り直し、他人のロックがすべて確認した ID のうちにあるときだけ実行」。自分のロックが Git LFS に断られたとき（未コミットの変更・手元に無い）は、確認してから `force`（ID で解除）。GUI はまだサーバーに通知しない（照合が拾う）。
+- GUI のロック・解除は core の `ops::plan_lock_in` / `plan_unlock_in`（フォルダを受け取る版）で、`.meta` は常に一緒。結果の文言は core の `Outcome::describe`（CLI と共通）。強制解除は「`preview_force_unlock` で外れる他人のロックを見せる → 確認 → `unlock_files` で計画を作り直し、他人のロックがすべて確認した ID のうちにあるときだけ実行」。自分のロックが Git LFS に断られたとき（未コミットの変更・手元に無い）は、確認してから `force`（ID で解除）。
+- 通知の処理は core（`server.rs`：送り先の設定・HTTP クライアント・イベントの型、`notify.rs`：結果からイベントを作る・名前の決め方・送信）。結果は `Notified`（Nothing / NoServer / Sent / Failed）で返し、表示は呼ぶ側（CLI は stderr、GUI は結果の下）。CLI と GUI は同じ中身を送る。GUI も `repo-tweaks.notify false` で止まる。`RepoInfo::in_dir` でフォルダを指定して作る。
 - GUI の「N日以上ロックされたまま」の文は core の `locks::stale_warning`、更新の時刻も Rust 側の format_jst（日本時間）で作る。
 - GUI の表示用の文字列（日本時間・経過時間・古さ）は Rust 側（gui/src-tauri/src/view.rs）で core の format_jst / format_age を使って作り、CLI と同じ言い回しにする。
 - GUI は起動時に `git::hide_console_windows()` を呼ぶ（Windows で git の窓を出さない。CLI では呼ばない。端末で認証を聞けるようにするため）。Mac では起動時に Homebrew などの bin を PATH の先頭に足す（端末と同じ git を使う）。

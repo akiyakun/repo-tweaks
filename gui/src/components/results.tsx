@@ -1,9 +1,9 @@
-import { CheckCircle2, CircleSlash, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleSlash, Info, Send, X, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { OpResult } from "@/lib/api";
+import type { NotifyNotice, OpResult } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-export type Results = { title: string; rows: OpResult[] } | { title: string; error: string };
+export type Results = { title: string; rows: OpResult[]; notice: NotifyNotice | null } | { title: string; error: string };
 
 /** What happened to each file in the last lock / unlock, worded like the CLI. */
 export function ResultsPanel({
@@ -63,7 +63,29 @@ export function ResultsPanel({
           ))}
         </ul>
       )}
+      {"notice" in results && results.notice && <Notice notice={results.notice} />}
     </section>
+  );
+}
+
+/** How the server (Discord) notification went, under the results. */
+function Notice({ notice }: { notice: NotifyNotice }) {
+  const style = {
+    sent: { icon: Send, className: "text-zinc-500" },
+    info: { icon: Info, className: "text-zinc-500" },
+    warning: { icon: AlertTriangle, className: "text-amber-700 dark:text-amber-300" },
+  }[notice.kind];
+  const Icon = style.icon;
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-2 border-t border-zinc-100 px-4 py-2 text-xs dark:border-zinc-800",
+        style.className,
+      )}
+    >
+      <Icon className="mt-px size-3.5 shrink-0" />
+      <span className="break-words select-text">{notice.message}</span>
+    </div>
   );
 }
 

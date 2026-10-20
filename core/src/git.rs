@@ -191,6 +191,7 @@ fn stdout(output: io::Result<Output>) -> Option<String> {
 }
 
 /// The git config values this tool uses. Later entries (local over global) win, as in git itself.
+#[derive(Default)]
 pub struct GitConfig(HashMap<String, String>);
 
 impl GitConfig {
@@ -242,13 +243,18 @@ pub struct RepoInfo {
 
 impl RepoInfo {
     pub fn current(config: &GitConfig) -> Self {
-        let (toplevel, commit, branch) = match git(&["rev-parse", "--show-toplevel", "HEAD", "--abbrev-ref", "HEAD"]) {
+        Self::in_dir(".", config)
+    }
+
+    /// Like `current`, for the repository at `dir` (the GUI). `config` must be read there too.
+    pub fn in_dir(dir: &str, config: &GitConfig) -> Self {
+        let (toplevel, commit, branch) = match git_in(dir, &["rev-parse", "--show-toplevel", "HEAD", "--abbrev-ref", "HEAD"]) {
             Some(out) => {
                 let mut lines = out.lines().map(|l| Some(l.trim().to_string()));
                 (lines.next().flatten(), lines.next().flatten(), lines.next().flatten())
             }
             // No commits yet: HEAD does not resolve, but the repository may still exist.
-            None => (toplevel(), None, None),
+            None => (git_in(dir, &["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string()), None, None),
         };
         Self::build(config, toplevel, commit, branch)
     }

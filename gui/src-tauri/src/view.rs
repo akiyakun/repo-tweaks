@@ -1,6 +1,7 @@
 //! Screen data for the lock list, formatted the same way as `repo-tweaks list`.
 
 use repo_tweaks_core::locks::{Lock, LockList, format_age, format_jst, stale_warning};
+use repo_tweaks_core::notify::{self, Notified};
 use repo_tweaks_core::ops::{Outcome, State, Target};
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -75,7 +76,7 @@ pub struct OpResult {
     can_force: bool,
 }
 
-pub fn op_results(results: &[(Target, Outcome)], now: OffsetDateTime) -> Vec<OpResult> {
+fn op_results(results: &[(Target, Outcome)], now: OffsetDateTime) -> Vec<OpResult> {
     results
         .iter()
         .map(|(target, outcome)| {
@@ -90,6 +91,32 @@ pub fn op_results(results: &[(Target, Outcome)], now: OffsetDateTime) -> Vec<OpR
             }
         })
         .collect()
+}
+
+/// A lock / unlock: what happened to each file, and to the notification about it.
+#[derive(Serialize, Debug)]
+pub struct OpReport {
+    results: Vec<OpResult>,
+    notice: Option<NotifyNotice>,
+}
+
+/// How the server (Discord) notification went. `kind` is "sent", "info" or "warning".
+#[derive(Serialize, Debug, PartialEq)]
+pub struct NotifyNotice {
+    kind: &'static str,
+    message: String,
+}
+
+impl OpReport {
+    pub fn new(results: &[(Target, Outcome)], notified: Notified, now: OffsetDateTime) -> Self {
+        let notice = match notified {
+            Notified::Nothing => None,
+            Notified::Sent(_) => Some(NotifyNotice { kind: "sent", message: "サーバーに通知しました".into() }),
+            Notified::NoServer => Some(NotifyNotice { kind: "info", message: notify::NO_SERVER_NOTICE.into() }),
+            Notified::Failed(message) => Some(NotifyNotice { kind: "warning", message }),
+        };
+        OpReport { results: op_results(results, now), notice }
+    }
 }
 
 /// Someone else's lock that a forced unlock would remove, for the confirmation dialog.
@@ -154,7 +181,9 @@ mod tests {
             (target("a.unity.meta", Some("a.unity"), State::Free), Outcome::SkippedPair),
             (target("b.psd", None, State::Free), Outcome::Failed("x".into())),
         ];
-        let json = serde_json::to_value(op_results(&results, datetime!(2026-10-18 18:30 UTC))).unwrap();
+        let report = OpReport::new(&results, Notified::Nothing, datetime!(2026-10-18 18:30 UTC));
+        assert_eq!(report.notice, None);
+        let json = serde_json::to_value(&report).unwrap()["results"].clone();
         assert_eq!(json[0]["label"], "できません");
         assert_eq!(json[0]["ok"], false);
         assert_eq!(json[0]["canForce"], true);
@@ -163,5 +192,13 @@ mod tests {
         assert_eq!(json[1]["canForce"], false);
         // Not our lock: nothing to force
         assert_eq!(json[2]["canForce"], false);
+    }
+
+    #[test]
+    fn notification_outcomes_become_notices() {
+        let notice = |n| OpReport::new(&[], n, datetime!(2026-10-18 18:30 UTC)).notice.map(|n| (n.kind, n.message));
+        assert_eq!(notice(Notified::Sent(2)), Some(("sent", "サーバーに通知しました".into())));
+        assert_eq!(notice(Notified::NoServer).unwrap().0, "info");
+        assert_eq!(notice(Notified::Failed("x".into())), Some(("warning", "x".into())));
     }
 }

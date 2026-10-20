@@ -1,4 +1,10 @@
-//! HTTP client for the repo-tweaks server.
+//! The repo-tweaks server: where it is (Config) and the HTTP client that talks to it.
+//!
+//! Lookup order for the address and token (first wins):
+//! 1. Environment variables REPO_TWEAKS_SERVER / REPO_TWEAKS_TOKEN
+//! 2. git config repo-tweaks.server / repo-tweaks.token
+//!    (GUI clients such as Fork, and the repo-tweaks GUI itself, do not load shell profiles,
+//!    so git config is the reliable place)
 
 use std::fmt;
 use std::time::Duration;
@@ -6,8 +12,41 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::Config;
-use repo_tweaks_core::git::RepoInfo;
+use crate::git::{GitConfig, KEY_SERVER, KEY_TOKEN, RepoInfo};
+
+pub struct Config {
+    pub server: String,
+    pub token: String,
+}
+
+impl Config {
+    pub fn load(git: &GitConfig) -> Result<Self, String> {
+        let server = lookup("REPO_TWEAKS_SERVER", git, KEY_SERVER).ok_or(
+            "サーバーの場所が未設定です。例: git config --global repo-tweaks.server http://localhost:8107",
+        )?;
+        let token = lookup("REPO_TWEAKS_TOKEN", git, KEY_TOKEN).ok_or(
+            "トークンが未設定です。例: git config --global repo-tweaks.token <サーバーの .env と同じ値>",
+        )?;
+        Ok(Config { server: normalize_server(&server), token })
+    }
+}
+
+/// Whether a server address is configured at all (notifications are optional).
+pub fn server_is_set(git: &GitConfig) -> bool {
+    lookup("REPO_TWEAKS_SERVER", git, KEY_SERVER).is_some()
+}
+
+fn lookup(env_name: &str, git: &GitConfig, git_key: &str) -> Option<String> {
+    std::env::var(env_name)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| git.get(git_key))
+        .map(|v| v.trim().to_string())
+}
+
+fn normalize_server(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
 
 // Keep hooks snappy: never stall a commit for long when the server is down.
 const TIMEOUT: Duration = Duration::from_secs(3);
@@ -176,6 +215,12 @@ fn error_detail(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trailing_slash_removed() {
+        assert_eq!(normalize_server(" http://localhost:8107/ "), "http://localhost:8107");
+        assert_eq!(normalize_server("http://localhost:8107"), "http://localhost:8107");
+    }
 
     #[test]
     fn missing_fields_are_not_sent() {

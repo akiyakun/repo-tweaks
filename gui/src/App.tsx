@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import {
   type LockReport,
   type LockRow,
-  type OpResult,
+  type OpReport,
   type OthersLock,
   droppedFolder,
   initialFolder,
@@ -143,16 +143,17 @@ export function App() {
     };
   }, [openFolder]);
 
-  /** Run a lock / unlock, show what happened to each file, then reload the list. */
+  /** Run a lock / unlock, show what happened to each file (and to the notification), then reload the list. */
   const runOp = useCallback(
-    async (title: string, op: () => Promise<OpResult[]>) => {
+    async (title: string, op: () => Promise<OpReport>) => {
       if (!dir) return;
       busyRef.current = true;
       setBusy(true);
       setResults(null);
       setNotice(null);
       try {
-        setResults({ title, rows: await op() });
+        const report = await op();
+        setResults({ title, rows: report.results, notice: report.notice });
       } catch (e) {
         setResults({ title, error: String(e) });
       } finally {

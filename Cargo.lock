@@ -500,7 +500,6 @@ dependencies = [
  "serde_json",
  "time",
  "unicode-width",
- "ureq",
 ]
 
 [[package]]
@@ -511,6 +510,7 @@ dependencies = [
  "serde",
  "serde_json",
  "time",
+ "ureq",
 ]
 
 [[package]]

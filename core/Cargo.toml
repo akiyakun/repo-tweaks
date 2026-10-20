@@ -7,6 +7,7 @@ edition = "2024"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 time = { version = "0.3.55", features = ["parsing", "formatting", "macros"] }
+ureq = { version = "3.4.2", features = ["json"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

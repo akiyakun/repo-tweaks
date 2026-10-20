@@ -48,6 +48,18 @@ export type OpResult = {
   canForce: boolean;
 };
 
+/** How the server (Discord) notification about a lock / unlock went. */
+export type NotifyNotice = {
+  kind: "sent" | "info" | "warning";
+  message: string;
+};
+
+/** A lock / unlock: what happened to each file, and to the notification about it. */
+export type OpReport = {
+  results: OpResult[];
+  notice: NotifyNotice | null;
+};
+
 /** Someone else's lock that a forced unlock would remove. */
 export type OthersLock = {
   id: string;
@@ -56,9 +68,9 @@ export type OthersLock = {
   lockedAt: string;
 };
 
-/** Lock files (absolute paths or relative to root), with their Unity .meta. */
-export function lockFiles(root: string, paths: string[]): Promise<OpResult[]> {
-  return invoke<OpResult[]>("lock_files", { root, paths });
+/** Lock files (absolute paths or relative to root), with their Unity .meta, and tell the server. */
+export function lockFiles(root: string, paths: string[]): Promise<OpReport> {
+  return invoke<OpReport>("lock_files", { root, paths });
 }
 
 /** Other people's locks a forced unlock of `paths` would remove, to show before asking. */
@@ -66,9 +78,12 @@ export function previewForceUnlock(root: string, paths: string[]): Promise<Other
   return invoke<OthersLock[]>("preview_force_unlock", { root, paths });
 }
 
-/** Unlock files. With `force`, only the other people's locks listed in `confirmed` (IDs) may go. */
-export function unlockFiles(root: string, paths: string[], force: boolean, confirmed: string[]): Promise<OpResult[]> {
-  return invoke<OpResult[]>("unlock_files", { root, paths, force, confirmed });
+/**
+ * Unlock files and tell the server. With `force`, only the other people's locks listed in
+ * `confirmed` (IDs) may go.
+ */
+export function unlockFiles(root: string, paths: string[], force: boolean, confirmed: string[]): Promise<OpReport> {
+  return invoke<OpReport>("unlock_files", { root, paths, force, confirmed });
 }
 
 /** The first dropped path that is a folder. */

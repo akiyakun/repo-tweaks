@@ -11,11 +11,12 @@ use std::time::Duration;
 use repo_tweaks_core::git::{self, GitConfig, KEY_STALE_DAYS};
 use repo_tweaks_core::lfs;
 use repo_tweaks_core::locks::resolve_stale_days;
-use repo_tweaks_core::ops;
+use repo_tweaks_core::notify::{self, Notified};
+use repo_tweaks_core::ops::{self, Outcome, Target};
 use repo_tweaks_core::paths::RepoContext;
 use time::OffsetDateTime;
 
-use view::{LockReport, OpResult, OthersLock};
+use view::{LockReport, OpReport, OthersLock};
 
 /// git lfs shares a lock cache per repository (.git/lfs/lockcache.db), so its calls must not overlap.
 /// The GUI runs one at a time; a hung git is stopped by the time limit, which frees the next one.
@@ -51,14 +52,21 @@ async fn list_locks(dir: String) -> Result<LockReport, String> {
 /// Lock files of the repository at `root` (with their Unity `.meta`). Paths are absolute or
 /// relative to `root`.
 #[tauri::command]
-async fn lock_files(root: String, paths: Vec<String>) -> Result<Vec<OpResult>, String> {
+async fn lock_files(root: String, paths: Vec<String>) -> Result<OpReport, String> {
     blocking(move || {
         let ctx = RepoContext::open(&root)?;
         let config = GitConfig::read_in(&ctx.root);
-        let plan = ops::plan_lock_in(ctx, &config, &paths, true)?;
-        Ok(view::op_results(&plan.lock(), OffsetDateTime::now_utc()))
+        let root = ctx.root.clone();
+        let results = ops::plan_lock_in(ctx, &config, &paths, true)?.lock();
+        Ok(report(&root, &config, &results))
     })
     .await
+}
+
+/// Tell the server (Discord) what changed, as the CLI does, and pack it with the results.
+fn report(root: &str, config: &GitConfig, results: &[(Target, Outcome)]) -> OpReport {
+    let notified = if notify::enabled(config) { notify::send_lock_events(root, config, results) } else { Notified::Nothing };
+    OpReport::new(results, notified, OffsetDateTime::now_utc())
 }
 
 /// Other people's locks that a forced unlock of `paths` would remove (for the confirmation).
@@ -78,15 +86,16 @@ async fn preview_force_unlock(root: String, paths: Vec<String>) -> Result<Vec<Ot
 /// removed only if every one of them is among `confirmed` (lock IDs the user agreed to): the plan
 /// is made again here, and a lock that changed since the confirmation stops everything.
 #[tauri::command]
-async fn unlock_files(root: String, paths: Vec<String>, force: bool, confirmed: Vec<String>) -> Result<Vec<OpResult>, String> {
+async fn unlock_files(root: String, paths: Vec<String>, force: bool, confirmed: Vec<String>) -> Result<OpReport, String> {
     blocking(move || {
         let ctx = RepoContext::open(&root)?;
         let config = GitConfig::read_in(&ctx.root);
+        let root = ctx.root.clone();
         let plan = ops::plan_unlock_in(ctx, &config, &paths, true, force)?;
         if plan.others_locks().iter().any(|l| !confirmed.contains(&l.id)) {
             return Err("確認したあとにロックの状態が変わりました。一覧を更新して、もう一度やり直してください（何も変更していません）".into());
         }
-        Ok(view::op_results(&plan.unlock(), OffsetDateTime::now_utc()))
+        Ok(report(&root, &config, &plan.unlock()))
     })
     .await
 }
